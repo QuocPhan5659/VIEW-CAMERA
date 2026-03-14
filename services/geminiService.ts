@@ -1,150 +1,264 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
+import { Resolution, AspectRatio, ModelType } from "../types";
 
-const getClient = () => {
-  const apiKey = process.env.API_KEY;
+const getAiClient = (providedApiKey?: string) => {
+  // Priority: 1. User-provided key, 2. Platform-selected key (API_KEY), 3. Platform default key (GEMINI_API_KEY)
+  const apiKey = providedApiKey || 
+                 (typeof process !== 'undefined' ? (process.env.API_KEY || process.env.GEMINI_API_KEY) : undefined) ||
+                 (typeof window !== 'undefined' && ((window as any).process?.env?.API_KEY || (window as any).process?.env?.GEMINI_API_KEY));
+  
   if (!apiKey) {
-    throw new Error("API_KEY environment variable is not set.");
+    console.error("API Key not found");
+    throw new Error("API Key is missing. Please click the API Key button to configure it.");
   }
   return new GoogleGenAI({ apiKey });
 };
 
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+export interface ArchitecturalAnalysis {
+  english: string;
+  vietnamese: string;
+}
+
 /**
- * Generates an image based on a prompt (and optional reference image) using the Gemini 2.5 Flash Image model.
+ * Analyzes the provided architectural images to create a detailed description
+ * of style, materials, and greenery to ensure consistency.
  */
-export const generateBananaImage = async (
-  prompt: string, 
-  options: {
-    referenceImage?: { data: string; mimeType: string };
-    aspectRatio?: "1:1" | "3:4" | "4:3" | "9:16" | "16:9";
-  }
-): Promise<string> => {
-  const ai = getClient();
+export const analyzeArchitecturalStyle = async (base64Images: string[], apiKey?: string): Promise<ArchitecturalAnalysis> => {
+  const ai = getAiClient(apiKey);
   
-  // Using gemini-2.5-flash-image for free usage (no user API key required)
-  const model = 'gemini-2.5-flash-image';
+  const imageParts = base64Images.map(img => {
+    // Handle both raw base64 and data URL formats
+    const cleanBase64 = img.includes('base64,') ? img.split('base64,')[1] : img;
+    const match = img.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+    const mimeType = match ? match[1] : 'image/jpeg';
+    return { inlineData: { mimeType, data: cleanBase64 } };
+  });
+
+  const prompt = `
+    Role: You are a Lead Architectural AI Specialist.
+    
+    CRITICAL RULE: MULTI-IMAGE SYNTHESIS & OBJECT UNITY
+    1. Treat ALL uploaded images as DIFFERENT ANGLES of the SAME SINGLE ARCHITECTURAL OBJECT.
+    2. Do NOT treat them as separate buildings. They are puzzle pieces of ONE house/building.
+    3. SYNTHESIS TASK: Combine data from all images to create a comprehensive "Material & Structural Map".
+       - Example: If Image 1 shows a stone facade and Image 2 shows a wooden side window, the final mental model MUST have BOTH a stone facade and wooden side windows.
+    4. You must infer the spatial relationship between the images (e.g., "This is the front," "This is the left side").
+    
+    Task: Analyze the synthesized building to generate a Unified Architectural DNA:
+    1. Structure & Geometry (Massing, roof shape, floor heights - consistent across all views).
+    2. Unified Material Palette (Specific stone types, wood colors, glass transparency - merged from all angles).
+    3. Greenery System (Location of planters, vines, specific plant types observed in ANY image).
+    4. Architectural Style (The single defining style of this building).
+    5. Context & Lighting (The surrounding atmosphere).
+    6. Output Format: JSON object with 2 fields:
+    - 'english': Detailed technical description for image generation prompts. Explicitly state: "This building features [Details from Img 1] on the front and [Details from Img 2] on the side..."
+    - 'vietnamese': Detailed analysis for the user (Tiếng Việt).
+
+    Constraint: Absolutely DO NOT omit specific distinct details found in any reference image. If a detail exists in one photo, it belongs to the building.
+  `;
 
   try {
-    const parts: any[] = [];
-    
-    // If a reference image is provided, add it to the parts
-    if (options.referenceImage) {
-      parts.push({
-        inlineData: {
-          data: options.referenceImage.data,
-          mimeType: options.referenceImage.mimeType
-        }
-      });
-    }
-
-    // Add the text prompt
-    parts.push({ text: prompt });
-
+    // Using gemini-3.1-pro-preview for analysis
     const response = await ai.models.generateContent({
-      model,
+      model: 'gemini-3.1-pro-preview',
       contents: {
-        parts: parts
+        parts: [
+          { text: prompt },
+          ...imageParts
+        ]
       },
       config: {
-        imageConfig: {
-          aspectRatio: options.aspectRatio || "1:1"
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            english: { type: Type.STRING },
+            vietnamese: { type: Type.STRING }
+          },
+          required: ['english', 'vietnamese']
         }
       }
     });
-
-    if (!response.candidates || response.candidates.length === 0) {
-      throw new Error("No candidates returned from Gemini.");
-    }
-
-    const content = response.candidates[0].content;
-    if (!content || !content.parts) {
-      throw new Error("No content parts returned.");
-    }
-
-    // Find the inlineData part which contains the image
-    const imagePart = content.parts.find(part => part.inlineData);
-
-    if (imagePart && imagePart.inlineData && imagePart.inlineData.data) {
-       // Convert raw base64 to data URL if not already present
-       const mimeType = imagePart.inlineData.mimeType || 'image/png';
-       return `data:${mimeType};base64,${imagePart.inlineData.data}`;
-    }
-
-    throw new Error("No image data found in response.");
-
-  } catch (error) {
-    console.error("Error generating banana image:", error);
-    throw error;
-  }
-};
-
-/**
- * Generates a creative banana-themed prompt using Gemini 3 Flash Preview.
- */
-export const generateCreativePrompt = async (): Promise<string> => {
-  const ai = getClient();
-  const model = 'gemini-3-flash-preview';
-
-  try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: "Generate a short, creative, and visually interesting prompt for an AI image generator involving a banana. It could be surreal, funny, or artistic. Output ONLY the prompt text, nothing else. Keep it under 20 words.",
-    });
-
-    return response.text ? response.text.trim() : "A giant banana floating in space";
-  } catch (error) {
-    console.error("Error generating creative prompt:", error);
-    return "A banana wearing sunglasses on a beach"; // Fallback
-  }
-};
-
-/**
- * General chat function using Gemini 3.1 Pro Preview with search grounding.
- * Supports optional image input.
- */
-export const chatWithGemini = async (message: string, history: any[] = [], image?: { data: string; mimeType: string }) => {
-  const ai = getClient();
-  const model = 'gemini-3-flash-preview';
-
-  try {
-    const chat = ai.chats.create({
-      model,
-      config: {
-        systemInstruction: "You are a helpful and creative AI assistant. You can answer any questions. If the user asks about bananas, be extra enthusiastic, but you are not limited to bananas. Use search grounding for current events.",
-        tools: [{ googleSearch: {} }],
-      },
-      history: history,
-    });
-
-    let result;
-    if (image) {
-      // If image is provided, we use sendMessage with parts
-      // Note: sendMessage in @google/genai SDK for chat usually takes a message string.
-      // For multimodal chat, we might need to use generateContent or handle parts.
-      // However, the SDK documentation says sendMessage takes { message: string | Part | (string | Part)[] }
-      const parts: any[] = [
-        { text: message },
-        {
-          inlineData: {
-            data: image.data,
-            mimeType: image.mimeType
-          }
-        }
-      ];
-      result = await chat.sendMessage({ message: parts });
-    } else {
-      result = await chat.sendMessage({ message });
-    }
     
-    // Extract grounding sources if any
-    const chunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks;
-    const sources = chunks ? chunks.map((chunk: any) => chunk.web).filter(Boolean) : [];
+    const text = response.text;
+    if (!text) {
+      return { english: "Analysis failed.", vietnamese: "Phân tích thất bại." };
+    }
+    return JSON.parse(text);
+  } catch (error) {
+    console.error("Analysis failed", error);
+    throw new Error("Failed to analyze architectural style.");
+  }
+};
+
+export const generateArchitecturalView = async (
+  base64Images: string[],
+  prompt: string,
+  resolution: Resolution = '1K',
+  aspectRatio: AspectRatio = '1:1',
+  analysisContext?: string,
+  customPrompt?: string,
+  useMasterLighting: boolean = false,
+  apiKey?: string,
+  selectedModel?: ModelType
+): Promise<string> => {
+  const ai = getAiClient(apiKey);
+  
+  // Construct image parts for the API
+  const imageParts = base64Images.map(img => {
+    const cleanBase64 = img.includes('base64,') ? img.split('base64,')[1] : img;
+    const match = img.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+    const mimeType = match ? match[1] : 'image/jpeg';
 
     return {
-      text: result.text || "I'm sorry, I couldn't generate a response.",
-      sources: sources
+      inlineData: {
+        mimeType: mimeType,
+        data: cleanBase64,
+      },
     };
-  } catch (error) {
-    console.error("Error in chatWithGemini:", error);
-    throw error;
+  });
+
+  // Handle Random Aspect Ratio
+  let finalAspectRatio = aspectRatio;
+  let randomAngleInstruction = "";
+  if (aspectRatio === 'random') {
+    const ratios: AspectRatio[] = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'];
+    finalAspectRatio = ratios[Math.floor(Math.random() * ratios.length)];
+    randomAngleInstruction = "\n\nRANDOM OUTPUT MODE: Choose a random, unique, and artistic architectural camera angle (e.g., extreme low angle, high oblique, or unique perspective) that differs from the standard reference view. IMPORTANT: You must strictly maintain all structural details, geometry, and materials without any distortion or redesign.";
   }
+
+  // Determine model and config based on resolution or user selection
+  const isHighRes = resolution === '2K' || resolution === '4K';
+  let model = selectedModel || 'pro';
+  
+  // Map aliases to actual model names
+  let actualModel = 'gemini-3.1-pro-preview';
+  if (model === 'gemini-3-pro') actualModel = 'gemini-3.1-pro-preview';
+
+  // Configuration for the model
+  const config: any = {
+    imageConfig: {
+      aspectRatio: finalAspectRatio
+    }
+  };
+
+  // Only certain models support imageSize
+  if (actualModel === 'gemini-3.2-flash-image-preview' || actualModel === 'gemini-3.1-flash-image-preview' || actualModel === 'gemini-3-pro-image-preview') {
+    if (isHighRes) {
+      config.imageConfig.imageSize = resolution;
+    }
+  }
+
+  // ... (rest of the code should use actualModel instead of model for the API call)
+
+  // Enhance the prompt with the analysis context if available
+  let finalPrompt = prompt;
+  
+  // Append custom user prompt instructions if provided
+  if (customPrompt && customPrompt.trim().length > 0) {
+    finalPrompt += `\n\nADDITIONAL INSTRUCTIONS: ${customPrompt}`;
+  }
+
+  // Master Lighting Logic
+  if (useMasterLighting) {
+    finalPrompt += `\n\nLIGHTING CONSTRAINT: STRICTLY MATCH the lighting, time of day, and atmospheric conditions of the reference image(s). Do not change the mood (e.g. if reference is night, output must be night).`;
+  }
+
+  // Inject Synthesis Logic into Generation
+  finalPrompt = `
+    SYSTEM INSTRUCTION: MULTI-IMAGE CONSISTENCY MODE
+    - You are viewing the SAME building from different angles (the attached reference images).
+    - You must reconstruct the 3D logic of this single building in your mind.
+    - If generating a side view, include details seen in the side-angle references.
+    - If generating a front view, include details seen in the front-angle references.
+    - Ensure material continuity: The wood/stone/paint colors must be identical to the references.
+    
+    STRICT ARCHITECTURAL CONSTRAINTS:
+    - KEEP THE GEOMETRY REALISTIC AND BELIEVABLE.
+    - DO NOT REDESIGN THE BUILDING. Maintain the exact structural proportions, materials, and architectural style of the provided reference image(s).
+    - NO DISTORTION: Details must not be warped, skewed, or altered from the original upload.
+    - AVOID EXAGGERATED PERSPECTIVES unless specifically requested. Use professional, realistic architectural photography principles.
+    - Ensure material continuity: The wood/stone/paint colors must be identical to the references.
+    ${randomAngleInstruction}
+    
+    ${analysisContext ? `
+    UNIFIED ARCHITECTURAL DNA (SYNTHESIZED FROM ALL ANGLES):
+    ${analysisContext}
+    ` : ''}
+    
+    TASK PROMPT:
+    ${finalPrompt}
+    
+    STRICT CONSTRAINT: The result must look like it belongs to the exact same project as the reference images. Correct vertical perspective. No hallucinations of non-existent styles. No structural modifications.
+    UNIQUE_ID: ${Math.random().toString(36).substring(7)}
+  `;
+
+  let attempt = 0;
+  const maxRetries = 8; // Increased retries further
+  let lastError: any;
+
+  while (attempt <= maxRetries) {
+    try {
+      const response = await ai.models.generateContent({
+        model: actualModel,
+        contents: {
+          parts: [
+            { text: finalPrompt },
+            ...imageParts
+          ],
+        },
+        config: config
+      });
+
+      const candidates = response.candidates;
+      if (candidates && candidates.length > 0) {
+        const parts = candidates[0].content.parts;
+        for (const part of parts) {
+          if (part.inlineData && part.inlineData.data) {
+            return `data:image/png;base64,${part.inlineData.data}`;
+          }
+        }
+      }
+      
+      const textOutput = response.text;
+      if (textOutput) {
+         console.warn("Model returned text instead of image:", textOutput);
+      }
+
+      throw new Error("No image data received from Gemini API.");
+    } catch (error: any) {
+      lastError = error;
+      
+      const errorCode = error.status || error.code || (error.error && error.error.code);
+      const errorMessage = error.message || JSON.stringify(error);
+      const isRateLimit = errorCode === 429 || errorMessage.includes('429') || errorMessage.includes('quota') || errorMessage.includes('RESOURCE_EXHAUSTED');
+      const isServerOverload = errorCode === 503 || errorMessage.includes('503');
+      const isPermissionDenied = errorCode === 403 || errorMessage.includes('403') || errorMessage.includes('PERMISSION_DENIED');
+
+      if (isPermissionDenied) {
+        throw new Error(`Permission Denied (403): The selected model "${model}" likely requires a Paid API Key or specific permissions. Please check your API key tier in Google AI Studio or switch to a free model.`);
+      }
+
+      if (isRateLimit && errorMessage.includes('quota')) {
+        console.error("Quota Exceeded (429):", errorMessage);
+        throw new Error("Quota Exceeded (429): You have exceeded your Gemini API quota. If you are on the Free Tier, you may have reached the daily or per-minute limit. Please wait a few minutes or switch to a different model/API key.");
+      }
+
+      if ((isRateLimit || isServerOverload) && attempt < maxRetries) {
+        attempt++;
+        // For rate limits, use a much more aggressive backoff
+        const baseDelay = isRateLimit ? 10000 : 3000;
+        const delay = baseDelay * Math.pow(2, attempt - 1); 
+        console.warn(`Gemini API Error (${errorCode}). Retrying in ${delay}ms... (Attempt ${attempt}/${maxRetries})`);
+        await wait(delay);
+        continue;
+      }
+      break;
+    }
+  }
+
+  console.error("Gemini API Error after retries:", lastError);
+  throw lastError;
 };

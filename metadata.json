@@ -1,9 +1,5 @@
 {
-  "name": "BANANA FREE",
-  "description": "A fruity AI application dedicated to generating the most absurd and delightful banana-themed images using Gemini.",
-  "requestFramePermissions": [
-    "camera",
-    "microphone",
-    "geolocation"
-  ]
+  "name": "ARC View",
+  "description": "Generate 33 distinct architectural photography angles from a single reference image using Gemini AI.",
+  "requestFramePermissions": []
 }

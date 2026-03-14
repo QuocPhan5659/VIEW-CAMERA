@@ -1,1397 +1,1150 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Banana, Loader2, Wand2, RefreshCw, Download, Trash2, Upload, X, Image as ImageIcon, LogIn, LogOut, User as UserIcon, ShieldCheck, Zap, Star, MessageSquare, Send, ExternalLink, Sparkles, Mail, Lock, UserPlus, Paperclip, Pencil, Check } from 'lucide-react';
-import { generateBananaImage, generateCreativePrompt, chatWithGemini } from './services/geminiService';
-import { GeneratedImage } from './types';
-import { auth, signInWithGoogle, logout, getAccountTier, AccountTier, signUpWithEmail, loginWithEmail, db } from './services/firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, doc, getDocFromServer, onSnapshot, setDoc, updateDoc, deleteDoc, query, orderBy, getDocs, Timestamp } from 'firebase/firestore';
-import Markdown from 'react-markdown';
-import { extractPngInfo, injectPngInfo } from './services/pngService';
+import React, { useState, useCallback } from 'react';
+import { VIEWS, SPECIAL_VIEWS, COMMON_CONSTRAINT, MULTI_ANGLE_SUB_PROMPTS, ARCHITECTURAL_ANGLES } from './constants';
+import { GenerationState, Resolution, AspectRatio, ViewDefinition, ModelType } from './types';
+import { ImageUploader } from './components/ImageUploader';
+import { ViewCard } from './components/ViewCard';
+import { ImageModal } from './components/ImageModal';
+import { ApiKeyModal } from './components/ApiKeyModal';
+import { generateArchitecturalView, analyzeArchitecturalStyle, ArchitecturalAnalysis } from './services/geminiService';
+import { Box, Sparkles, AlertCircle, Settings, ScanEye, FileText, CheckCircle2, Plus, Key, Sun, Lightbulb, LayoutGrid, Layers, Loader2, RefreshCw, Download, Maximize2, ArrowUpCircle, Moon, Camera, X, ChevronDown } from 'lucide-react';
 
-interface UploadedImage {
-  preview: string; // Full data URL for display
-  data: string;    // Base64 string for API
-  mimeType: string;
-}
-
-interface ChatMessage {
-  role: 'user' | 'model';
-  text: string;
-  sources?: any[];
-  image?: string;
-}
-
-interface ChatSession {
-  id: string;
-  title: string;
-  messages: ChatMessage[];
-  createdAt: number;
-}
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string;
-    email?: string | null;
-    emailVerified?: boolean;
-    isAnonymous?: boolean;
-    tenantId?: string | null;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
+// Declare AI Studio global types
+declare global {
+  interface AIStudio {
+    openSelectKey: () => Promise<void>;
+    hasSelectedApiKey: () => Promise<boolean>;
+  }
+  interface Window {
+    aistudio?: AIStudio;
   }
 }
 
 const App: React.FC = () => {
-  const [user, setUser] = useState<User | null>({ 
-    displayName: 'Guest Banana', 
-    photoURL: 'https://picsum.photos/seed/banana/100/100',
-    email: 'guest@example.com'
-  } as any);
-  const [authLoading, setAuthLoading] = useState<boolean>(false);
-  const [tier, setTier] = useState<AccountTier>('Free');
-  const [activeTab, setActiveTab] = useState<'lab' | 'chat'>('lab');
-  const [isGuest, setIsGuest] = useState<boolean>(true);
-
-  const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
-    const errInfo: FirestoreErrorInfo = {
-      error: error instanceof Error ? error.message : String(error),
-      authInfo: {
-        userId: auth?.currentUser?.uid,
-        email: auth?.currentUser?.email,
-        emailVerified: auth?.currentUser?.emailVerified,
-        isAnonymous: auth?.currentUser?.isAnonymous,
-        tenantId: auth?.currentUser?.tenantId,
-        providerInfo: auth?.currentUser?.providerData.map(provider => ({
-          providerId: provider.providerId,
-          displayName: provider.displayName,
-          email: provider.email,
-          photoUrl: provider.photoURL
-        })) || []
-      },
-      operationType,
-      path
-    };
-    console.error('Firestore Error: ', JSON.stringify(errInfo));
-    throw new Error(JSON.stringify(errInfo));
-  };
-
-  useEffect(() => {
-    async function testConnection() {
-      if (!db) return;
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-        }
-      }
-    }
-    testConnection();
-  }, []);
-
-  // Image Config State
-  const [aspectRatio, setAspectRatio] = useState<string>("1:1");
-  const [customAspectRatio, setCustomAspectRatio] = useState<string>("2:1");
-
-  // Auth Form State
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [authSubmitting, setAuthSubmitting] = useState(false);
-
-  // Image Gen State
-  const [prompt, setPrompt] = useState<string>('');
-  const [loading, setLoading] = useState<boolean>(false);
-  const [currentImage, setCurrentImage] = useState<GeneratedImage | null>(null);
-  const [history, setHistory] = useState<GeneratedImage[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [uploadedImage, setUploadedImage] = useState<UploadedImage | null>(null);
-  const [zoomedImageUrl, setZoomedImageUrl] = useState<string | null>(null);
-  const [zoomScale, setZoomScale] = useState<number>(1);
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [isChatDragging, setIsChatDragging] = useState<boolean>(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const promptRef = useRef<HTMLTextAreaElement>(null);
-
-  // Chat State
-  const [chatInput, setChatInput] = useState<string>('');
-  const [chatUploadedImage, setChatUploadedImage] = useState<UploadedImage | null>(null);
-  const [chatSessions, setChatSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('banana_chat_sessions');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Filter out sessions older than 24h
-        const now = Date.now();
-        return parsed.filter((s: ChatSession) => now - s.createdAt < 24 * 60 * 60 * 1000);
-      } catch (e) {
-        return [];
-      }
-    }
-    return [];
-  });
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [chatLoading, setChatLoading] = useState<boolean>(false);
-  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
-  const [editingTitle, setEditingTitle] = useState<string>('');
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const chatFileInputRef = useRef<HTMLInputElement>(null);
-
-  // Derived state for current messages
-  const currentSession = chatSessions.find(s => s.id === currentSessionId);
-  const chatMessages = currentSession?.messages || [];
-
-  useEffect(() => {
-    localStorage.setItem('banana_chat_sessions', JSON.stringify(chatSessions));
-  }, [chatSessions]);
-
-  // Auto-delete timer (check every minute)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = Date.now();
-      setChatSessions(prev => {
-        const filtered = prev.filter(s => now - s.createdAt < 24 * 60 * 60 * 1000);
-        if (filtered.length !== prev.length) {
-          return filtered;
-        }
-        return prev;
-      });
-    }, 60000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const createNewSession = () => {
-    const newSession: ChatSession = {
-      id: Date.now().toString(),
-      title: `New Chat ${chatSessions.length + 1}`,
-      messages: [],
-      createdAt: Date.now()
-    };
-    setChatSessions(prev => [newSession, ...prev]);
-    setCurrentSessionId(newSession.id);
-  };
-
-  const deleteSession = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setChatSessions(prev => prev.filter(s => s.id !== id));
-    if (currentSessionId === id) {
-      setCurrentSessionId(null);
-    }
-  };
-
-  const handleRenameSession = (id: string, newTitle: string) => {
-    if (!newTitle.trim()) return;
-    setChatSessions(prev => prev.map(s => s.id === id ? { ...s, title: newTitle } : s));
-    setEditingSessionId(null);
-  };
-
-  useEffect(() => {
-    if (chatSessions.length > 0 && !currentSessionId) {
-      setCurrentSessionId(chatSessions[0].id);
-    }
-  }, [chatSessions, currentSessionId]);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
-
-  useEffect(() => {
-    if (promptRef.current) {
-      promptRef.current.style.height = 'auto';
-      promptRef.current.style.height = `${promptRef.current.scrollHeight}px`;
-    }
-  }, [prompt]);
-
-  useEffect(() => {
-    if (!auth) {
-      setAuthLoading(false);
-      return;
-    }
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setTier(getAccountTier(currentUser));
-      setAuthLoading(false);
+  const [sourceImages, setSourceImages] = useState<string[]>([]);
+  const [resolution, setResolution] = useState<Resolution>('1K');
+  const [selectedModel, setSelectedModel] = useState<ModelType>('gemini-3-pro');
+  const [customViews, setCustomViews] = useState<ViewDefinition[]>([]);
+  const [useMasterLighting, setUseMasterLighting] = useState(false);
+  
+  const [generations, setGenerations] = useState<GenerationState>(() => {
+    const initial: GenerationState = {};
+    [...VIEWS, ...SPECIAL_VIEWS].forEach(view => {
+      initial[view.id] = { id: view.id, status: 'idle' };
     });
-    return () => unsubscribe();
-  }, []);
+    return initial;
+  });
+  
+  // Analysis State
+  const [analysis, setAnalysis] = useState<ArchitecturalAnalysis | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const [activeTab, setActiveTab] = useState<'standard' | 'special'>('standard');
+  const [extractedViews, setExtractedViews] = useState<Record<number, string[]>>({});
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [modalImage, setModalImage] = useState<string | null>(null);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+  const [specialViews, setSpecialViews] = useState<ViewDefinition[]>(SPECIAL_VIEWS);
+  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
+  const [specialViewPrompts, setSpecialViewPrompts] = useState<Record<number, string>>({});
+  const [isStopping, setIsStopping] = useState<Record<number, boolean>>({});
+  const cancelRefs = React.useRef<Record<number, boolean>>({});
+
+  // Keyboard shortcuts
+  React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (zoomedImageUrl) {
-        if (e.key === 'Escape' || e.key === ' ') {
-          e.preventDefault();
-          setZoomedImageUrl(null);
-          setZoomScale(1);
+      if (e.altKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        if (activeTab === 'standard') {
+          handleAddCustomView();
+        } else {
+          handleAddSpecialView();
         }
       }
     };
-
-    const handlePaste = (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (items) {
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].type.indexOf('image') !== -1) {
-            const blob = items[i].getAsFile();
-            if (blob) {
-              if (activeTab === 'lab') {
-                processFile(blob);
-              } else {
-                handleChatImageUpload(blob);
-              }
-            }
-          }
-        }
-      }
-    };
-
     window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('paste', handlePaste);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('paste', handlePaste);
-    };
-  }, [zoomedImageUrl, activeTab]);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab]);
 
-  const handleLogin = async () => {
-    try {
-      await signInWithGoogle();
-      setIsGuest(false);
-    } catch (err) {
-      setError("Failed to sign in. Please try again.");
+  // API Key State
+  const [userApiKey, setUserApiKey] = useState<string>(() => localStorage.getItem('gemini_api_key') || '');
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+
+  const checkApiKey = async (isPaidModel: boolean) => {
+    // If user has provided a manual key, use it
+    if (userApiKey) return true;
+
+    // Fallback to platform key if available
+    if (window.aistudio) {
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      if (hasKey) return true;
     }
+
+    // If it's a paid model and no key is found, return false to trigger fallback
+    if (isPaidModel) return false;
+
+    // For free models, we can proceed with the environment's default key
+    return true;
   };
 
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError(null);
-    setAuthSubmitting(true);
-    try {
-      if (authMode === 'signup') {
-        if (!name.trim()) throw new Error("Name is required");
-        await signUpWithEmail(email, password, name);
-      } else {
-        await loginWithEmail(email, password);
-      }
-      setIsGuest(false);
-    } catch (err: any) {
-      setAuthError(err.message || "Authentication failed");
-    } finally {
-      setAuthSubmitting(false);
-    }
+  const handleStop = (viewId: number) => {
+    cancelRefs.current[viewId] = true;
+    setIsStopping(prev => ({ ...prev, [viewId]: true }));
+    setGenerations(prev => ({
+      ...prev,
+      [viewId]: { ...prev[viewId], status: 'idle' }
+    }));
   };
 
-  const handleLogout = async () => {
-    try {
-      if (isGuest) {
-        setUser(null);
-        setIsGuest(false);
-      } else {
-        await logout();
-      }
-      setHistory([]);
-      setCurrentImage(null);
-      setChatSessions([]);
-      setCurrentSessionId(null);
-    } catch (err) {
-      setError("Failed to sign out.");
-    }
+  const handleSaveApiKey = (key: string) => {
+    setUserApiKey(key);
+    localStorage.setItem('gemini_api_key', key);
   };
 
-  const handleResetAccount = async () => {
-    if (window.confirm("Are you sure? This will clear all your history and log you out to start fresh.")) {
-      localStorage.clear();
-      await handleLogout();
-      window.location.reload();
-    }
+  const handleImagesUpload = (newImages: string[]) => {
+    setGlobalError(null);
+    setSourceImages(prev => {
+      const combined = [...prev, ...newImages];
+      return combined.slice(0, 5); // Enforce max 5 limit
+    });
+    
+    // NOTE: Removed resetGenerations() to preserve existing views when adding images
+    setAnalysis(null); 
+    setAnalysisError(null);
   };
 
-  const handleChangeEmail = async () => {
-    const newEmail = window.prompt("Enter new email address:");
-    if (newEmail && newEmail.includes('@')) {
-      alert("Email change request sent! (Note: In a real app, this would trigger a Firebase updateEmail call)");
-      // In a real app: await updateEmail(auth.currentUser, newEmail);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      processFile(file);
-    }
-  };
-
-  const processFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setError("Please upload a valid image file (PNG, JPEG, etc).");
+  // Add a generated image back to source images
+  const handleAddGeneratedToSource = (imageUrl: string) => {
+    if (sourceImages.length >= 5) {
+      setGlobalError("Maximum 5 reference images allowed. Please remove one to add this view.");
       return;
     }
+    handleImagesUpload([imageUrl]);
+    // Scroll to top to see the added image
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleRemoveImage = (index: number) => {
+    setSourceImages(prev => prev.filter((_, i) => i !== index));
+    // NOTE: Removed resetGenerations() to preserve existing views when removing images
+    setAnalysis(null);
+  };
+
+  const handleClearAllImages = () => {
+    setSourceImages([]);
+    // NOTE: Removed resetGenerations() to preserve existing views even when clearing source
+    setAnalysis(null);
+    setAnalysisError(null);
+  };
+
+  const resetGenerations = () => {
+    const reset: GenerationState = {};
+    [...VIEWS, ...SPECIAL_VIEWS, ...customViews].forEach(view => {
+      reset[view.id] = { id: view.id, status: 'idle' };
+    });
+    setGenerations(reset);
+  };
+
+  // Custom View Handlers
+  const handleAddCustomView = () => {
+    const newId = Date.now();
+    const newView: ViewDefinition = {
+      id: newId,
+      titleVI: "", // Empty for user to fill
+      titleEN: "Custom View",
+      description: "Custom user defined view",
+      prompt: "Tạo ra góc chụp nghệ thuật với máy ảnh chuyên nghiệp, bao gồm: ", // Default prompt
+      isCustom: true
+    };
+    setCustomViews(prev => [...prev, newView]);
+  };
+
+  const handleAddSpecialView = () => {
+    const newId = Date.now();
+    const newView: ViewDefinition = {
+      id: newId,
+      titleVI: `Collage 4 Góc Nghệ Thuật ${specialViews.length + 1}`,
+      titleEN: `Artistic 4-Angle Collage ${specialViews.length + 1}`,
+      description: "Cận cảnh, trung cảnh, toàn cảnh (Close-up, medium, wide).",
+      prompt: `Dựa vào ảnh tải lên làm tham chiếu, Tạo ra 4 góc chụp nghệ thuật với máy ảnh chuyên nghiệp, bao gồm cả Đặc Tả, Cận Cảnh, Trung Cảnh và Toàn Cảnh.. Giảm kích thước 4-View Collage cho đồng bộ bằng với các bố cục 2 bên được cân xứng chuyên nghiệp, Giữ nguyên độ phân giải gốc, không làm giảm chất lượng. Duy trì độ sắc nét nguyên bản, không làm mờ, không nén.
+    MANDATORY COMPOSITION: You MUST arrange the 4 views in a strict 2x2 grid layout with 4 equal-sized rectangular panels. 
+    - Top-Left: Wide Panoramic Shot (Toàn cảnh).
+    - Top-Right: Medium Shot (Trung cảnh).
+    - Bottom-Left: Detail Shot 1 (Cận cảnh 1).
+    - Bottom-Right: Detail Shot 2 (Cận cảnh 2).
+    Style: Professional architectural photography, consistent lighting and materials across all 4 views. High detailed, photorealistic. ${COMMON_CONSTRAINT}`,
+      isCustom: true
+    };
+    setSpecialViews(prev => [...prev, newView]);
+  };
+
+  const handleDeleteSpecialView = (id: number) => {
+    setSpecialViews(prev => prev.filter(v => v.id !== id));
+    setGenerations(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const handleRenameSpecialView = (id: number, newName: string) => {
+    setSpecialViews(prev => prev.map(v => v.id === id ? { ...v, titleVI: newName } : v));
+  };
+
+  const handleDeleteCustomView = (id: number) => {
+    setCustomViews(prev => prev.filter(v => v.id !== id));
+    setGenerations(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const handleRenameCustomView = (id: number, newTitle: string) => {
+    setCustomViews(prev => prev.map(v => v.id === id ? { ...v, titleVI: newTitle } : v));
+  };
+
+  // Handler for Architectural Analysis
+  const handleAnalyze = async () => {
+    if (sourceImages.length === 0) return;
     
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      const matches = result.match(/^data:(.+);base64,(.+)$/);
-      if (matches) {
-        const mimeType = matches[1];
-        setUploadedImage({
-          preview: result,
-          mimeType: mimeType,
-          data: matches[2]
-        });
-        setError(null);
+    // Analysis uses a free model (1.5 Flash), so we don't strictly need a paid key
+    if (!(await checkApiKey(false))) return;
 
-        // Detect aspect ratio
-        const img = new Image();
-        img.onload = () => {
-          const ratio = img.width / img.height;
-          if (Math.abs(ratio - 1) < 0.1) setAspectRatio("1:1");
-          else if (Math.abs(ratio - 0.75) < 0.1) setAspectRatio("3:4");
-          else if (Math.abs(ratio - 1.33) < 0.1) setAspectRatio("4:3");
-          else if (Math.abs(ratio - 0.56) < 0.1) setAspectRatio("9:16");
-          else if (Math.abs(ratio - 1.77) < 0.1) setAspectRatio("16:9");
-          else if (Math.abs(ratio - 1.5) < 0.1) setAspectRatio("3:2");
-          else if (Math.abs(ratio - 0.66) < 0.1) setAspectRatio("2:3");
-          else {
-            setAspectRatio("custom");
-            setCustomAspectRatio(`${img.width}:${img.height}`);
-          }
-        };
-        img.src = result;
-
-        // Extract PNG info if it's a PNG
-        if (mimeType === 'image/png') {
-          const info = extractPngInfo(result);
-          if (info) {
-            setPrompt(info);
-          }
-        }
+    setIsAnalyzing(true);
+    setAnalysisError(null);
+    
+    try {
+      const result = await analyzeArchitecturalStyle(sourceImages, userApiKey);
+      setAnalysis(result);
+    } catch (error: any) {
+      console.error(error);
+      const errorCode = error.status || error.code || error.error?.code;
+      const errorMessage = error.message || (typeof error === 'string' ? error : JSON.stringify(error));
+      const is403 = errorCode === 403 || errorMessage.includes('403') || errorMessage.includes('Permission') || errorMessage.includes('PERMISSION_DENIED');
+      
+      const msg = errorMessage || "Failed to analyze images.";
+      setAnalysisError(is403 ? "Permission Denied (403). Some models require a Paid API Key or specific permissions. Please check your configuration." : msg);
+      
+      if (is403) {
+        setIsApiKeyModalOpen(true);
       }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      processFile(file);
-    }
-  };
-
-  const clearUploadedImage = () => {
-    setUploadedImage(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handlePromptDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const result = reader.result as string;
-        const info = extractPngInfo(result);
-        if (info) {
-          setPrompt(info);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleGenerate = useCallback(async () => {
-    if (!prompt.trim() || !user) return;
-    
-    setLoading(true);
-    setError(null);
-    try {
-      const finalPrompt = prompt.toLowerCase().includes('banana') 
-        ? prompt 
-        : `A banana ${prompt}`;
-
-      const referenceImage = uploadedImage ? { 
-        data: uploadedImage.data, 
-        mimeType: uploadedImage.mimeType 
-      } : undefined;
-
-      const finalAspectRatio = aspectRatio === 'custom' ? customAspectRatio : aspectRatio;
-
-      const imageBase64 = await generateBananaImage(finalPrompt, {
-        referenceImage,
-        aspectRatio: finalAspectRatio as any
-      });
-      
-      const newImage: GeneratedImage = {
-        id: Date.now().toString(),
-        data: imageBase64,
-        prompt: finalPrompt,
-        timestamp: Date.now(),
-      };
-
-      setCurrentImage(newImage);
-      setHistory(prev => [newImage, ...prev]);
-    } catch (err: any) {
-      setError(err instanceof Error ? err.message : 'Failed to generate banana. The peel was too slippery.');
     } finally {
-      setLoading(false);
-    }
-  }, [prompt, uploadedImage, user]);
-
-  const handleDeleteImage = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setHistory(prev => prev.filter(img => img.id !== id));
-    if (currentImage?.id === id) {
-      setCurrentImage(null);
+      setIsAnalyzing(false);
     }
   };
 
-  const handleSurpriseMe = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
-    setError(null);
-    setPrompt("Thinking of a peeled idea...");
-    try {
-      const creativePrompt = await generateCreativePrompt();
-      setPrompt(creativePrompt);
-      
-      const finalAspectRatio = aspectRatio === 'custom' ? customAspectRatio : aspectRatio;
+  const handleGenerate = async (viewId: number, customPrompt?: string, aspectRatio: AspectRatio = '1:1', specificImage?: string) => {
+    if (sourceImages.length === 0 && !specificImage) return;
 
-      const imageBase64 = await generateBananaImage(creativePrompt, {
-        aspectRatio: finalAspectRatio as any
-      });
-      const newImage: GeneratedImage = {
-        id: Date.now().toString(),
-        data: imageBase64,
-        prompt: creativePrompt,
-        timestamp: Date.now(),
-      };
+    // Reset cancel state for this view
+    cancelRefs.current[viewId] = false;
+    setIsStopping(prev => ({ ...prev, [viewId]: false }));
 
-      setCurrentImage(newImage);
-      setHistory(prev => [newImage, ...prev]);
-    } catch (err: any) {
-      setError(err instanceof Error ? err.message : 'Failed to dream of bananas.');
-    } finally {
-      setLoading(false);
-    }
-  }, [user]);
-
-  const handleDownload = (dataUrl: string, filename: string, prompt?: string) => {
-    let finalDataUrl = dataUrl;
-    // Inject PNG info if it's a PNG and we have a prompt
-    if (prompt && dataUrl.startsWith('data:image/png')) {
-      finalDataUrl = injectPngInfo(dataUrl, prompt);
-    }
-
-    const link = document.createElement('a');
-    link.href = finalDataUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const handleClearHistory = () => {
-    setHistory([]);
-    setCurrentImage(null);
-  };
-
-  const handleSendMessage = async () => {
-    if ((!chatInput.trim() && !chatUploadedImage) || chatLoading) return;
-
-    const userMessageText = chatInput.trim();
-    const currentChatImage = chatUploadedImage;
+    const isPaidModel = selectedModel === 'gemini-3-pro' || selectedModel === 'fast';
+    const hasKey = await checkApiKey(isPaidModel);
     
-    const userMessage: ChatMessage = {
-      role: 'user',
-      text: userMessageText || (currentChatImage ? "Analyze this image" : ""),
-      image: currentChatImage?.preview
-    };
-
-    // Determine target session ID beforehand to avoid race conditions
-    let targetSessionId = currentSessionId;
-    let isNew = false;
-    if (!targetSessionId) {
-      targetSessionId = Date.now().toString();
-      isNew = true;
+    let modelToUse = selectedModel;
+    if (!hasKey && isPaidModel) {
+      modelToUse = 'banana-free';
+      setGlobalError("No Paid API Key found. Falling back to Banana Free model.");
+      setTimeout(() => setGlobalError(null), 4000);
     }
 
-    // Capture history for API call BEFORE updating state
-    const currentHistory = isNew ? [] : [...chatMessages].map(m => ({
-      role: m.role,
-      parts: [{ text: m.text }]
+    setGenerations(prev => ({
+      ...prev,
+      [viewId]: { ...prev[viewId], status: 'loading', error: undefined }
     }));
 
-    // Update sessions state
-    setChatSessions(prev => {
-      if (isNew) {
-        const newSession: ChatSession = {
-          id: targetSessionId!,
-          title: userMessageText.slice(0, 30) || 'New Chat',
-          messages: [userMessage],
-          createdAt: Date.now()
-        };
-        return [newSession, ...prev];
+    try {
+      const allViewsList = [...VIEWS, ...specialViews, ...customViews];
+      const view = allViewsList.find(v => v.id === viewId);
+      if (!view) throw new Error("View not found");
+
+      // Construct prompt: Use system prompt, or build one for custom views
+      let effectivePrompt = view.prompt;
+      
+      // For the special collage view, we want to combine the base prompt with any custom additions
+      const isSpecialView = specialViews.some(v => v.id === viewId);
+      if (isSpecialView) {
+        effectivePrompt = `${view.prompt}${customPrompt ? `\n\nADDITIONAL USER REQUIREMENTS: ${customPrompt}` : ''}`;
+      } else if (view.isCustom) {
+        effectivePrompt = `Create an architectural view matching this title/description: "${view.titleVI}".`;
       }
-      return prev.map(s => {
-        if (s.id === targetSessionId) {
-          return { ...s, messages: [...s.messages, userMessage] };
+
+      // Combine source images with specific image if provided
+      // For Special Collage, if specific image is provided, we use ONLY that to ensure focus
+      const imagesToUse = specificImage ? [specificImage] : sourceImages;
+
+      // If it's a special collage view, generate 4 separate images
+      if (isSpecialView) {
+        setExtractedViews(prev => ({
+          ...prev,
+          [viewId]: [undefined, undefined, undefined, undefined, undefined]
+        }));
+
+        // Parse customPrompt to see if user selected specific angles
+        const selectedAngles = customPrompt 
+          ? customPrompt.split('\n').filter(line => line.includes(':')) 
+          : [];
+        
+        const subPrompts = MULTI_ANGLE_SUB_PROMPTS;
+        
+        // Generate 5 views sequentially to avoid rate limit (429) errors
+        let firstError: any = null;
+        const validResults: string[] = [];
+
+        for (let index = 0; index < subPrompts.length; index++) {
+          const subPrompt = subPrompts[index];
+          try {
+            if (cancelRefs.current[viewId]) break;
+
+            // If user selected specific angles, try to use them for the slots
+            // Otherwise fallback to the default sub-prompts
+            let slotPrompt = subPrompt;
+            if (selectedAngles.length > 0) {
+              // Use the selected angle for this slot if available, otherwise fallback
+              slotPrompt = selectedAngles[index % selectedAngles.length];
+            }
+
+            const url = await generateArchitecturalView(
+              imagesToUse,
+              `${slotPrompt}${customPrompt && !selectedAngles.includes(slotPrompt) ? `\n\nADDITIONAL USER REQUIREMENTS: ${customPrompt}` : ''}`,
+              resolution,
+              aspectRatio,
+              analysis?.english || undefined,
+              undefined, // Don't pass customPrompt again as it's included in the main prompt string
+              useMasterLighting,
+              userApiKey,
+              modelToUse
+            );
+            
+            if (cancelRefs.current[viewId]) break;
+
+            setExtractedViews(prev => {
+              const current = [...(prev[viewId] || [undefined, undefined, undefined, undefined, undefined])];
+              current[index] = url;
+              return { ...prev, [viewId]: current };
+            });
+            validResults.push(url);
+
+            // Small delay between requests to be extra safe
+            if (index < subPrompts.length - 1) {
+              await new Promise(r => setTimeout(r, 10000));
+            }
+          } catch (err: any) {
+            console.error(`Failed to generate sub-view ${index}`, err);
+            if (!firstError) firstError = err;
+          }
         }
-        return s;
+        
+        if (cancelRefs.current[viewId]) return;
+
+        if (validResults.length > 0) {
+          // Create a collage from the 5 images for the main result
+          const collageUrl = await handleCreateCollage(validResults.length === 5 ? validResults : [...validResults, ...Array(5 - validResults.length).fill(validResults[0])]);
+          
+          if (cancelRefs.current[viewId]) return;
+
+          setGenerations(prev => ({
+            ...prev,
+            [viewId]: { ...prev[viewId], status: 'success', imageUrl: collageUrl }
+          }));
+        } else {
+          setGenerations(prev => ({
+            ...prev,
+            [viewId]: { ...prev[viewId], status: 'error', error: firstError?.message || 'Generation failed' }
+          }));
+        }
+        return;
+
+        /*
+        for (let index = 0; index < subPrompts.length; index++) {
+          const subPrompt = subPrompts[index];
+          try {
+            if (cancelRefs.current[viewId]) break;
+
+            // If user selected specific angles, try to use them for the slots
+            // Otherwise fallback to the default sub-prompts
+            let slotPrompt = subPrompt;
+            if (selectedAngles.length > 0) {
+              // Use the selected angle for this slot if available, otherwise fallback
+              slotPrompt = selectedAngles[index % selectedAngles.length];
+            }
+
+            const url = await generateArchitecturalView(
+              imagesToUse,
+              `${slotPrompt}${customPrompt && !selectedAngles.includes(slotPrompt) ? `\n\nADDITIONAL USER REQUIREMENTS: ${customPrompt}` : ''}`,
+              resolution,
+              aspectRatio,
+              analysis?.english || undefined,
+              undefined, // Don't pass customPrompt again as it's included in the main prompt string
+              useMasterLighting,
+              userApiKey,
+              modelToUse
+            );
+            
+            if (cancelRefs.current[viewId]) break;
+
+            setExtractedViews(prev => {
+              const current = [...(prev[viewId] || [undefined, undefined, undefined, undefined, undefined])];
+              current[index] = url;
+              return { ...prev, [viewId]: current };
+            });
+            validResults.push(url);
+
+            // Small delay between requests to be extra safe
+            if (index < subPrompts.length - 1) {
+              await new Promise(r => setTimeout(r, 3000));
+            }
+          } catch (err: any) {
+            console.error(`Failed to generate sub-view ${index}`, err);
+            if (!firstError) firstError = err;
+          }
+        }
+        */
+        
+        if (cancelRefs.current[viewId]) return;
+
+        if (validResults.length > 0) {
+          // Create a collage from the 5 images for the main result
+          const collageUrl = await handleCreateCollage(validResults.length === 5 ? validResults : [...validResults, ...Array(5 - validResults.length).fill(validResults[0])]);
+          
+          if (cancelRefs.current[viewId]) return;
+
+          setGenerations(prev => ({
+            ...prev,
+            [viewId]: { ...prev[viewId], status: 'success', imageUrl: collageUrl }
+          }));
+        } else {
+          throw firstError || new Error("Failed to generate any views");
+        }
+      } else {
+        // Standard generation
+        const generatedImageUrl = await generateArchitecturalView(
+          imagesToUse, 
+          effectivePrompt, 
+          resolution,
+          aspectRatio,
+          analysis?.english || undefined,
+          customPrompt,
+          useMasterLighting,
+          userApiKey,
+          modelToUse
+        );
+
+        setGenerations(prev => ({
+          ...prev,
+          [viewId]: { ...prev[viewId], status: 'success', imageUrl: generatedImageUrl }
+        }));
+      }
+    } catch (error: any) {
+      console.error(error);
+      const errorCode = error.status || error.code || error.error?.code;
+      const errorMessage = error.message || (typeof error === 'string' ? error : JSON.stringify(error));
+      const is403 = errorCode === 403 || errorMessage.includes('403') || errorMessage.includes('Permission') || errorMessage.includes('PERMISSION_DENIED');
+      
+      setGenerations(prev => ({
+        ...prev,
+        [viewId]: { 
+          ...prev[viewId], 
+          status: 'error', 
+          error: is403 ? "API Key Permission Error (403)" : (errorMessage || "Failed to generate") 
+        }
+      }));
+      
+      if (is403) {
+        setGlobalError(`Permission Denied (403). The selected model "${selectedModel}" likely requires a Paid API Key or your key lacks specific permissions. Please try switching to "Banana Nano" (Gemini 2.5) or select a valid Paid Key in the configuration.`);
+        setIsApiKeyModalOpen(true);
+      }
+    }
+  };
+
+  const handleGenerateAll = useCallback(async () => {
+    if (sourceImages.length === 0) return;
+    
+    // We don't block here as handleGenerate handles individual view fallbacks
+    const isPaidModel = selectedModel === 'gemini-3-pro' || selectedModel === 'fast';
+    await checkApiKey(isPaidModel);
+
+    const allViews = [...VIEWS, ...SPECIAL_VIEWS, ...customViews];
+    // For custom views, only generate if they have a title
+    const viewsToGenerate = allViews.filter(view => {
+      if (view.isCustom && !view.titleVI.trim()) return false;
+      return generations[view.id]?.status !== 'success';
+    });
+    
+    if (viewsToGenerate.length === 0) return;
+
+    setGenerations(prev => {
+      const next = { ...prev };
+      viewsToGenerate.forEach(view => {
+        next[view.id] = { ...next[view.id], status: 'loading', error: undefined };
       });
+      return next;
     });
 
-    if (isNew) {
-      setCurrentSessionId(targetSessionId);
+    for (const view of viewsToGenerate) {
+      try {
+        // Bulk generation uses default 1:1 ratio
+        await handleGenerate(view.id, undefined, '1:1');
+      } catch (e) {
+        console.error(`Failed to generate view ${view.id}`, e);
+      }
+      
+      if (view !== viewsToGenerate[viewsToGenerate.length - 1]) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
     }
 
-    setChatInput('');
-    setChatUploadedImage(null);
-    setChatLoading(true);
+  }, [sourceImages, generations, resolution, analysis, customViews, useMasterLighting]);
 
+  const handleCreateCollage = async (imageUrls: string[]): Promise<string> => {
+    return new Promise(async (resolve, reject) => {
+      try {
+        const images = await Promise.all(imageUrls.map(url => {
+          return new Promise<HTMLImageElement>((res, rej) => {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => res(img);
+            img.onerror = rej;
+            img.src = url;
+          });
+        }));
+
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error("Could not get canvas context");
+
+        // Use the first image as size reference
+        const w = images[0].width;
+        const h = images[0].height;
+        const padding = Math.floor(w * 0.04);
+        const gap = Math.floor(w * 0.02);
+        const borderRadius = Math.floor(w * 0.04);
+        
+        // 5-View Layout:
+        // Row 1: 2 images
+        // Row 2: 2 images
+        // Row 3: 1 image (full width)
+        canvas.width = w * 2 + gap + padding * 2;
+        canvas.height = h * 3 + gap * 2 + padding * 2;
+
+        // Fill background with dark grey/black
+        ctx.fillStyle = '#121212';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const drawRoundedImage = (img: HTMLImageElement, x: number, y: number, width: number, height: number, radius: number) => {
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(x + radius, y);
+          ctx.lineTo(x + width - radius, y);
+          ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+          ctx.lineTo(x + width, y + height - radius);
+          ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+          ctx.lineTo(x + radius, y + height);
+          ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+          ctx.lineTo(x, y + radius);
+          ctx.quadraticCurveTo(x, y, x + radius, y);
+          ctx.closePath();
+          ctx.clip();
+          ctx.drawImage(img, x, y, width, height);
+          ctx.restore();
+        };
+
+        // Row 1
+        drawRoundedImage(images[0], padding, padding, w, h, borderRadius);
+        drawRoundedImage(images[1], padding + w + gap, padding, w, h, borderRadius);
+        
+        // Row 2
+        drawRoundedImage(images[2], padding, padding + h + gap, w, h, borderRadius);
+        drawRoundedImage(images[3], padding + w + gap, padding + h + gap, w, h, borderRadius);
+        
+        // Row 3: Panoramic View (View 5)
+        // Full width: w * 2 + gap
+        drawRoundedImage(images[4], padding, padding + h * 2 + gap * 2, w * 2 + gap, h, borderRadius);
+
+        resolve(canvas.toDataURL('image/png'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  };
+
+  const handleExtractViews = async (viewId: number, imageUrl: string) => {
+    setIsExtracting(true);
     try {
-      const imageParam = currentChatImage ? {
-        data: currentChatImage.data,
-        mimeType: currentChatImage.mimeType
-      } : undefined;
-
-      const result = await chatWithGemini(userMessage.text, currentHistory as any, imageParam);
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = imageUrl;
       
-      const modelMessage: ChatMessage = {
-        role: 'model',
-        text: result.text,
-        sources: result.sources
-      };
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+      });
 
-      setChatSessions(prev => prev.map(s => {
-        if (s.id === targetSessionId) {
-          const newTitle = s.title.startsWith('New Chat') ? userMessageText.slice(0, 30) : s.title;
-          return { ...s, title: newTitle || s.title, messages: [...s.messages, modelMessage] };
-        }
-        return s;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("Could not get canvas context");
+
+      const w = img.width / 2;
+      const h = img.height / 2;
+      canvas.width = w;
+      canvas.height = h;
+
+      const views: string[] = [];
+      
+      // Top Left
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h, 0, 0, w, h);
+      views.push(canvas.toDataURL('image/png'));
+
+      // Top Right
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, w, 0, w, h, 0, 0, w, h);
+      views.push(canvas.toDataURL('image/png'));
+
+      // Bottom Left
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, 0, h, w, h, 0, 0, w, h);
+      views.push(canvas.toDataURL('image/png'));
+
+      // Bottom Right
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, w, h, w, h, 0, 0, w, h);
+      views.push(canvas.toDataURL('image/png'));
+
+      setExtractedViews(prev => ({
+        ...prev,
+        [viewId]: views
       }));
     } catch (err) {
-      const errorMessage: ChatMessage = { role: 'model', text: "Sorry, I had a slip-up. Can you try again?" };
-      setChatSessions(prev => prev.map(s => {
-        if (s.id === targetSessionId) {
-          return { ...s, messages: [...s.messages, errorMessage] };
-        }
-        return s;
-      }));
+      console.error("Extraction failed", err);
     } finally {
-      setChatLoading(false);
+      setIsExtracting(false);
     }
   };
 
-  const handleChatImageUpload = (file: File) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      const matches = result.match(/^data:(.+);base64,(.+)$/);
-      if (matches) {
-        setChatUploadedImage({
-          preview: result,
-          mimeType: matches[1],
-          data: matches[2]
-        });
-      }
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleChatDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsChatDragging(true);
-  };
-
-  const handleChatDragLeave = () => {
-    setIsChatDragging(false);
-  };
-
-  const handleChatDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsChatDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      handleChatImageUpload(file);
-    }
-  };
-
-  const handleZoomScroll = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    setZoomScale(prev => Math.max(0.1, Math.min(5, prev + delta)));
-  };
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-dark-900 flex items-center justify-center">
-        <div className="text-center space-y-4">
-          <Banana size={64} className="text-banana-500 animate-bounce mx-auto" />
-          <p className="text-banana-400 font-black text-xl">Peeling the app open...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    const isConfigured = !!process.env.VITE_FIREBASE_API_KEY;
-
-    return (
-      <div className="min-h-screen bg-dark-900 flex flex-col items-center justify-center p-6">
-        <div className="max-w-md w-full bg-dark-800 rounded-3xl p-8 shadow-2xl border-4 border-banana-500 text-center space-y-8">
-          <div className="space-y-2">
-            <Banana size={80} className="text-banana-500 mx-auto animate-wiggle" />
-            <h1 className="text-4xl font-black text-banana-500 tracking-tight">BANANA GEN</h1>
-            <p className="text-banana-100 font-medium opacity-80">The world's most absurd banana AI generator.</p>
-          </div>
-          
-          <div className="space-y-4">
-            {!isConfigured && (
-              <div className="bg-amber-900/20 border-2 border-amber-500/30 p-4 rounded-2xl text-left mb-4">
-                <p className="text-amber-400 font-bold text-sm mb-1 flex items-center gap-2">
-                  <ShieldCheck size={16} /> Configuration Required
-                </p>
-                <p className="text-amber-200/60 text-[10px] leading-relaxed">
-                  Firebase keys are missing. Please add them in <strong>Settings</strong> to enable login.
-                </p>
-              </div>
-            )}
-
-            <div className="space-y-6">
-              <h2 className="text-xl font-black text-banana-500 uppercase tracking-widest">Login to Banana Gen</h2>
-
-              <form onSubmit={handleEmailAuth} className="space-y-3 text-left">
-                <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-banana-500" size={18} />
-                  <input 
-                    type="email" 
-                    placeholder="Email Address"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full pl-10 pr-4 py-3 rounded-xl border-2 border-dark-800 bg-dark-900 text-white focus:border-banana-500 outline-none transition-all"
-                  />
-                </div>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-banana-500" size={18} />
-                  <input 
-                    type="password" 
-                    placeholder="Password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full pl-10 pr-4 py-3 rounded-xl border-2 border-dark-800 bg-dark-900 text-white focus:border-banana-500 outline-none transition-all"
-                  />
-                </div>
-                
-                {authError && <p className="text-red-400 text-xs font-bold">{authError}</p>}
-
-                <button 
-                  type="submit"
-                  disabled={authSubmitting}
-                  className="w-full bg-banana-500 text-dark-900 font-black py-3 rounded-xl hover:bg-banana-400 transition-all flex items-center justify-center gap-2"
-                >
-                  {authSubmitting ? <Loader2 className="animate-spin" size={20} /> : <LogIn size={20} />}
-                  LOGIN
-                </button>
-              </form>
-
-              <div className="relative">
-                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-dark-800"></div></div>
-                <div className="relative flex justify-center text-xs uppercase"><span className="bg-dark-800 px-2 text-banana-500/40 font-bold">Or continue with</span></div>
-              </div>
-
-              <button 
-                onClick={handleLogin}
-                className="w-full bg-dark-900 border-2 border-dark-800 hover:border-banana-500 text-white font-bold py-3 px-6 rounded-xl transition-all flex items-center justify-center gap-3"
-              >
-                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
-                GOOGLE
-              </button>
-
-              <button 
-                onClick={() => {
-                  setUser({ 
-                    displayName: 'Guest Banana', 
-                    photoURL: 'https://picsum.photos/seed/banana/100/100',
-                    email: 'guest@example.com'
-                  } as any);
-                  setTier('Free');
-                  setIsGuest(true);
-                }}
-                className="w-full text-banana-500/60 font-bold text-sm hover:underline"
-              >
-                Continue as guest
-              </button>
-            </div>
-          </div>
-
-          <div className="pt-4 border-t-2 border-dark-800 flex justify-center gap-4">
-             <div className="flex flex-col items-center">
-               <ShieldCheck className="text-green-500" size={20} />
-               <span className="text-[10px] font-bold text-banana-500/40 uppercase">Secure</span>
-             </div>
-             <div className="flex flex-col items-center">
-               <Zap className="text-banana-500" size={20} />
-               <span className="text-[10px] font-bold text-banana-500/40 uppercase">Fast</span>
-             </div>
-             <div className="flex flex-col items-center">
-               <Star className="text-purple-500" size={20} />
-               <span className="text-[10px] font-bold text-banana-500/40 uppercase">Absurd</span>
-             </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const allViews = [...VIEWS, ...specialViews, ...customViews];
 
   return (
-    <div className="min-h-screen flex flex-col font-sans bg-dark-900 text-white">
+    <div className={`min-h-screen pb-12 transition-colors duration-300 ${theme === 'dark' ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'}`}>
       {/* Header */}
-      <header className="bg-dark-800 text-banana-500 p-6 shadow-lg sticky top-0 z-50 border-b border-dark-800">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <Banana size={40} className="text-banana-500 animate-wiggle" />
-            <h1 className="text-3xl font-black tracking-tight">BANANA GEN</h1>
+      <header className={`border-b sticky top-0 z-30 transition-colors duration-300 ${theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+        <div className="w-full px-4 sm:px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="bg-blue-600 text-white p-2 rounded-lg shadow-lg shadow-blue-500/20">
+              <Box size={24} />
+            </div>
+            <div>
+              <h1 className={`text-xl font-bold tracking-tight uppercase ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>ArchiView AI</h1>
+              <p className={`text-[10px] font-bold uppercase tracking-[0.2em] hidden sm:block ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>Architectural Visualization</p>
+            </div>
           </div>
           
-          <div className="flex items-center gap-4">
-            <div className="hidden md:flex flex-col items-end">
-              <span className="text-[10px] font-black text-banana-500/40 uppercase tracking-widest">Account Status</span>
-              <div className={`text-xs font-bold px-2 py-0.5 rounded-full border-2 border-banana-500 flex items-center gap-1 ${
-                tier === 'Plus' ? 'bg-purple-500 text-white' : 
-                tier === 'Pro' ? 'bg-blue-500 text-white' : 
-                'bg-dark-900 text-banana-500'
-              }`}>
-                {tier === 'Plus' && <Star size={10} />}
-                {tier === 'Pro' && <Zap size={10} />}
-                {tier.toUpperCase()}
-              </div>
-            </div>
-            
-            <div className="flex items-center gap-3 bg-dark-900 p-1.5 rounded-2xl border border-dark-800">
-              {user.photoURL ? (
-                <img 
-                  src={user.photoURL} 
-                  alt={user.displayName || 'User'} 
-                  className="w-8 h-8 rounded-xl border-2 border-banana-500 shadow-sm object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              ) : (
-                <div className="w-8 h-8 rounded-xl border-2 border-banana-500 shadow-sm bg-dark-800 flex items-center justify-center text-banana-500">
-                  <UserIcon size={14} />
-                </div>
-              )}
-              <button 
-                onClick={handleLogout}
-                className="p-2 hover:bg-red-500 hover:text-white rounded-xl transition-colors text-banana-500"
-                title="Logout"
-              >
-                <LogOut size={20} />
-              </button>
-              <button 
-                onClick={handleResetAccount}
-                className="p-2 hover:bg-banana-500 hover:text-dark-900 rounded-xl transition-colors text-banana-500/40"
-                title="Reset & Switch Account"
-              >
-                <RefreshCw size={16} />
-              </button>
-              {!isGuest && (
+          <div className="flex items-center gap-3">
+             <div className={`flex p-1 rounded-lg mr-2 transition-colors ${theme === 'dark' ? 'bg-gray-700' : 'bg-gray-100'}`}>
                 <button 
-                  onClick={handleChangeEmail}
-                  className="p-2 hover:bg-banana-500 hover:text-dark-900 rounded-xl transition-colors text-banana-500/40"
-                  title="Change Email"
+                  onClick={() => setActiveTab('standard')}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-md transition-all ${activeTab === 'standard' ? (theme === 'dark' ? 'bg-gray-600 text-blue-400 shadow-sm' : 'bg-white text-blue-600 shadow-sm') : (theme === 'dark' ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700')}`}
                 >
-                  <Mail size={16} />
+                  <LayoutGrid size={14} />
+                  <span>Standard</span>
                 </button>
-              )}
-            </div>
+                <button 
+                  onClick={() => setActiveTab('special')}
+                  className={`flex items-center gap-2 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-md transition-all ${activeTab === 'special' ? (theme === 'dark' ? 'bg-gray-600 text-blue-400 shadow-sm' : 'bg-white text-blue-600 shadow-sm') : (theme === 'dark' ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700')}`}
+                >
+                  <Layers size={14} />
+                  <span>Collage</span>
+                </button>
+             </div>
+
+             <div className="h-6 w-px bg-gray-200 hidden sm:block mx-1"></div>
+
+             {/* Resolution Selector in Header */}
+             <div className="flex items-center gap-2">
+                <div className={`flex p-1 rounded-lg ${theme === 'dark' ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                  {(['1K', '2K', '4K'] as Resolution[]).map((res) => (
+                    <button
+                      key={res}
+                      onClick={() => setResolution(res)}
+                      className={`px-2.5 py-1 text-[10px] font-bold rounded-md transition-all ${resolution === res ? (theme === 'dark' ? 'bg-gray-600 text-blue-400 shadow-sm' : 'bg-white text-blue-600 shadow-sm') : (theme === 'dark' ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700')}`}
+                    >
+                      {res}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="h-6 w-px bg-gray-200 hidden sm:block mx-1"></div>
+
+                {/* Model Selector */}
+                <div className="flex items-center gap-2">
+                  <div className="relative group">
+                    <select
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value as ModelType)}
+                      className={`appearance-none pl-8 pr-8 py-1.5 text-[11px] font-bold rounded-full border transition-all cursor-pointer focus:outline-none focus:ring-1 focus:ring-purple-500/50 ${theme === 'dark' ? 'bg-gray-800 border-gray-700 text-purple-400 hover:bg-gray-700' : 'bg-white border-gray-200 text-purple-600 hover:bg-gray-50'}`}
+                    >
+                      <option value="gemini-3-pro">Gemini 3 Pro</option>
+                      <option value="banana-free">Banana Free</option>
+                      <option value="fast">Fast</option>
+                    </select>
+                    <div className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-purple-500">
+                      <Sparkles size={12} />
+                    </div>
+                    <div className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-purple-500">
+                      <ChevronDown size={12} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="h-6 w-px bg-gray-200 hidden sm:block mx-1"></div>
+
+                <button
+                  onClick={activeTab === 'standard' ? handleAddCustomView : handleAddSpecialView}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md font-bold transition-all text-[10px] uppercase tracking-widest border shadow-sm ${theme === 'dark' ? 'bg-blue-900/20 border-blue-800 text-blue-400 hover:bg-blue-900/40' : 'bg-blue-50 border-blue-200 text-blue-600 hover:bg-blue-100'}`}
+                  title={activeTab === 'standard' ? "Add New Custom Row" : "Add New Collage Row"}
+                >
+                  <Plus size={14} />
+                  <span>Tạo hàng mới</span>
+                </button>
+              </div>
+             
+             {/* Theme Toggle */}
+             <button 
+                onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+                className={`p-2 rounded-lg border transition-all ${theme === 'dark' ? 'bg-gray-700 border-gray-600 text-yellow-400 hover:bg-gray-600' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
+              >
+                {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+              </button>
+
+             <button 
+                onClick={() => setIsApiKeyModalOpen(true)}
+                className={`flex items-center gap-1 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded-md transition-all border
+                  ${userApiKey 
+                    ? 'bg-green-50 border-green-200 text-green-700' 
+                    : (theme === 'dark' ? 'bg-gray-700 border-gray-600 text-gray-400 hover:bg-gray-600' : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200')
+                  }
+                  ${!userApiKey ? 'animate-pulse' : ''}
+                `}
+              >
+                <Key size={14} />
+                <span>{userApiKey ? 'PRO' : 'API Key'}</span>
+              </button>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="flex-grow max-w-[95%] mx-auto w-full p-4 sm:p-6 space-y-6">
+      <main className="w-full px-2 py-6">
         
-        {/* Tab Navigation */}
-        <div className="flex bg-dark-800 p-1 rounded-2xl border-2 border-dark-800">
-          <button 
-            onClick={() => setActiveTab('lab')}
-            className={`flex-1 py-3 rounded-xl font-black text-sm flex items-center justify-center gap-2 transition-all ${activeTab === 'lab' ? 'bg-banana-500 text-dark-900 shadow-md' : 'text-banana-500/50 hover:text-banana-500'}`}
-          >
-            <Wand2 size={18} />
-            BANANA LAB
-          </button>
-          <button 
-            onClick={() => setActiveTab('chat')}
-            className={`flex-1 py-3 rounded-xl font-black text-sm flex items-center justify-center gap-2 transition-all ${activeTab === 'chat' ? 'bg-banana-500 text-dark-900 shadow-md' : 'text-banana-500/50 hover:text-banana-500'}`}
-          >
-            <MessageSquare size={18} />
-            BANANA CHAT
-          </button>
+        {globalError && (
+          <div className={`w-full mb-6 p-4 border rounded-lg flex flex-col sm:flex-row items-center gap-4 animate-in fade-in slide-in-from-top-2 duration-300 ${theme === 'dark' ? 'bg-red-900/20 border-red-800 text-red-400' : 'bg-red-50 border-red-200 text-red-700'}`}>
+            <div className="flex items-center gap-3 flex-grow">
+              <AlertCircle size={20} className="shrink-0" />
+              <p className="text-sm font-medium">{globalError}</p>
+            </div>
+            <button 
+              onClick={() => setGlobalError(null)}
+              className={`p-1 rounded-full hover:bg-black/5 transition-colors ${theme === 'dark' ? 'hover:bg-white/10' : ''}`}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
+        {/* Action Section Container */}
+        <div className="w-full mb-6 px-2">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className={`text-lg font-bold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>Reference & Configuration</h2>
+            </div>
+
+            <ImageUploader 
+              currentImages={sourceImages} 
+              onImagesUpload={handleImagesUpload} 
+              onRemoveImage={handleRemoveImage}
+              onClearAll={handleClearAllImages}
+              theme={theme}
+            />
+          </div>
+
+          {/* Standard Tab Controls */}
+          {activeTab === 'standard' && (
+            <div className="space-y-4 mt-4">
+              {/* Control Bar: Analyze / Master Lighting / Generate */}
+              {sourceImages.length > 0 && (
+                <div className={`flex flex-col sm:flex-row items-center gap-3 p-2 rounded-xl shadow-sm border transition-colors ${theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'}`}>
+                  
+                  {/* Analyze Button */}
+                  <button 
+                    onClick={handleAnalyze}
+                    disabled={isAnalyzing || sourceImages.length === 0}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all
+                      ${analysis 
+                        ? (theme === 'dark' ? 'bg-green-900/20 text-green-400 border border-green-800' : 'bg-green-50 text-green-700 border border-green-200') 
+                        : (theme === 'dark' ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200')
+                      }
+                      ${isAnalyzing ? 'opacity-50 cursor-not-allowed' : ''}
+                    `}
+                  >
+                    {isAnalyzing ? <Loader2 size={16} className="animate-spin" /> : <ScanEye size={16} />}
+                    <span>{analysis ? 'Re-Analyze Style' : 'Analyze Style'}</span>
+                  </button>
+
+                  <div className="h-6 w-px bg-gray-200 hidden sm:block"></div>
+
+                  {/* Master Lighting Toggle */}
+                  <button 
+                    onClick={() => setUseMasterLighting(!useMasterLighting)}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold transition-all border
+                      ${useMasterLighting 
+                        ? (theme === 'dark' ? 'bg-yellow-900/20 border-yellow-800 text-yellow-400' : 'bg-yellow-50 border-yellow-200 text-yellow-700') 
+                        : (theme === 'dark' ? 'bg-gray-700 border-gray-600 text-gray-400 hover:bg-gray-600' : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100')
+                      }
+                    `}
+                  >
+                    {useMasterLighting ? <Lightbulb size={14} /> : <Sun size={14} />}
+                    <span>Master Lighting</span>
+                  </button>
+
+                  <div className="flex-grow"></div>
+
+                  {/* Generate All Button */}
+                  <button 
+                    onClick={handleGenerateAll}
+                    disabled={sourceImages.length === 0}
+                    className={`flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-700 transition-all shadow-md hover:shadow-lg shadow-blue-200 disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    <Sparkles size={16} />
+                    <span>Generate All Views</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Analysis Result Details (Inside Standard Tab) */}
+              {analysisError && (
+                <div className="mt-4 p-4 bg-red-50 border border-red-100 rounded-xl text-red-600 text-center text-sm">
+                  {analysisError}
+                </div>
+              )}
+
+              {analysis && (
+                <div className="mt-4 bg-white rounded-xl border border-blue-100 shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-4 duration-500">
+                  <div className="bg-blue-50/50 p-4 border-b border-blue-100 flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-blue-800">
+                      <CheckCircle2 size={18} />
+                      <h3 className="font-bold text-sm uppercase tracking-wide">Architectural DNA Analyzed</h3>
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-100">
+                    <div className="p-5">
+                      <h4 className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-[10px] font-extrabold">VN</span>
+                        Phân tích Tiếng Việt
+                      </h4>
+                      <div className="flex gap-3">
+                        <FileText className="text-gray-400 shrink-0 mt-1" size={18} />
+                        <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto pr-2">
+                          {analysis.vietnamese}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="p-5 bg-gray-50/30">
+                      <h4 className="text-xs font-bold text-gray-500 uppercase mb-3 flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[10px] font-extrabold">EN</span>
+                        English Analysis (DNA)
+                      </h4>
+                      <div className="flex gap-3">
+                        <FileText className="text-gray-400 shrink-0 mt-1" size={18} />
+                        <p className="text-sm text-gray-700 leading-relaxed font-mono whitespace-pre-wrap max-h-60 overflow-y-auto pr-2">
+                          {analysis.english}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {activeTab === 'lab' ? (
-          <div className="space-y-8 animate-in slide-in-from-left duration-300">
-            {/* Controls Section */}
-            <section className="bg-dark-800 rounded-3xl p-6 shadow-xl border-4 border-dark-800">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Left Column: Upload */}
-                <div className="flex flex-col space-y-4">
-                  <label className="text-banana-500 font-bold text-lg flex items-center gap-2">
-                    <span className="bg-banana-500 w-8 h-8 rounded-full flex items-center justify-center text-sm text-dark-900">1</span>
-                    Reference Image (Drag & Drop):
-                  </label>
-                  
-                  <div 
-                    onClick={() => fileInputRef.current?.click()}
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center cursor-pointer transition-all gap-2 h-[200px] relative overflow-hidden ${
-                      isDragging ? 'border-banana-500 bg-banana-500/10' : 'border-banana-500/30 hover:bg-dark-900 text-banana-500/60'
-                    }`}
-                  >
-                    {!uploadedImage ? (
-                      <>
-                        <ImageIcon size={32} />
-                        <span className="font-semibold text-center">Click or Drag Image here</span>
-                      </>
-                    ) : (
-                      <div className="relative w-full h-full flex items-center justify-center">
-                        <img 
-                          src={uploadedImage.preview} 
-                          alt="Uploaded reference" 
-                          className="max-h-full max-w-full object-contain cursor-zoom-in"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setZoomedImageUrl(uploadedImage.preview);
+        {/* View Grid */}
+        {(sourceImages.length > 0 || activeTab === 'special') ? (
+          <div className="space-y-8">
+            {activeTab === 'special' && (
+              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+                {/* Removed header section */}
+                <div className="space-y-12 w-full mx-auto">
+                  {specialViews.map((view) => (
+                    <div key={view.id} className={`flex flex-col lg:flex-row gap-6 items-start justify-center border-b pb-12 last:border-0 transition-colors ${theme === 'dark' ? 'border-gray-800' : 'border-gray-200'}`}>
+                      {/* Column 1: Control Card */}
+                      <div className="w-full lg:w-[320px] shrink-0">
+                        <ViewCard
+                          key={view.id}
+                          view={view}
+                          data={generations[view.id]}
+                          onAddToSource={handleAddGeneratedToSource}
+                          disabled={isAnalyzing}
+                          onMaximize={setModalImage}
+                          onDelete={handleDeleteSpecialView}
+                          onRename={handleRenameSpecialView}
+                          buttonLabel={generations[view.id]?.status === 'loading' ? "STOP" : "GENERATE"}
+                          onGenerate={(id, prompt, res, aspect) => {
+                            if (generations[id]?.status === 'loading') {
+                              handleStop(id);
+                            } else {
+                              handleGenerate(id, prompt, res, aspect);
+                            }
                           }}
-                        />
-                        <button 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            clearUploadedImage();
-                          }}
-                          className="absolute top-0 right-0 bg-red-500 text-white p-1 rounded-full hover:bg-red-600 transition-colors shadow-sm z-10"
-                          title="Remove image"
-                        >
-                          <X size={16} />
-                        </button>
-                      </div>
-                    )}
-                    <input 
-                      type="file" 
-                      ref={fileInputRef} 
-                      onChange={handleImageUpload} 
-                      accept="image/*" 
-                      className="hidden" 
-                    />
-                  </div>
-                </div>
-
-                {/* Right Column: Prompt */}
-                <div className="flex flex-col space-y-4">
-                  <label className="text-banana-500 font-bold text-lg flex items-center gap-2">
-                    <span className="bg-banana-500 w-8 h-8 rounded-full flex items-center justify-center text-sm text-dark-900">2</span>
-                    Banana Vision:
-                  </label>
-                  <div className="flex flex-col gap-4 flex-grow">
-                    <textarea 
-                      ref={promptRef}
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={handlePromptDrop}
-                      placeholder="e.g., A banana wearing a tuxedo..."
-                      className="w-full p-4 rounded-xl border-2 border-dark-900 bg-dark-900 focus:border-banana-500 focus:ring-4 focus:ring-banana-500/10 transition-all outline-none text-lg text-white placeholder-banana-500/20 resize-none overflow-hidden"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && e.ctrlKey) {
-                          e.preventDefault();
-                          handleGenerate();
-                        }
-                      }}
-                    />
-                    <div className="text-[10px] text-banana-500/40 font-bold text-right -mt-3 mr-2">
-                      Press Ctrl + Enter to Generate
-                    </div>
-                    
-                    <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-                      <div className="flex gap-2 w-full">
-                        <select 
-                          value={aspectRatio}
-                          onChange={(e) => setAspectRatio(e.target.value)}
-                          className="flex-grow p-2 rounded-xl border-2 border-dark-900 bg-dark-900 text-xs font-bold text-banana-500 focus:border-banana-500 outline-none"
-                        >
-                          <option value="1:1">1:1 (Square)</option>
-                          <option value="3:4">3:4 (Portrait)</option>
-                          <option value="4:3">4:3 (Landscape)</option>
-                          <option value="3:2">3:2 (Classic)</option>
-                          <option value="2:3">2:3 (Classic Port.)</option>
-                          <option value="9:16">9:16 (Story)</option>
-                          <option value="16:9">16:9 (Cinematic)</option>
-                          <option value="custom">Custom Ratio</option>
-                        </select>
-                        {aspectRatio === 'custom' && (
-                          <input 
-                            type="text"
-                            value={customAspectRatio}
-                            onChange={(e) => setCustomAspectRatio(e.target.value)}
-                            placeholder="W:H (e.g. 2:1)"
-                            className="w-24 p-2 rounded-xl border-2 border-dark-900 bg-dark-900 text-xs font-bold text-banana-500 focus:border-banana-500 outline-none"
-                          />
-                        )}
-                      </div>
-                      <button 
-                        onClick={handleGenerate}
-                        disabled={loading || !prompt}
-                        className="bg-banana-500 hover:bg-banana-400 disabled:opacity-50 disabled:cursor-not-allowed text-dark-900 font-black py-3 px-6 rounded-xl shadow-[0_4px_0_rgb(183,149,11)] active:shadow-none active:translate-y-[4px] transition-all flex items-center justify-center gap-2 whitespace-nowrap w-full sm:w-auto"
-                      >
-                        {loading ? <Loader2 className="animate-spin" /> : <Wand2 />}
-                        BANANA FREE
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-6 flex justify-between items-center border-t border-dark-900 pt-4">
-                <button 
-                  onClick={handleSurpriseMe}
-                  disabled={loading}
-                  className="text-banana-500/60 hover:text-banana-500 font-bold text-sm flex items-center gap-2 hover:underline decoration-2 underline-offset-4"
-                >
-                  <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-                  Surprise me
-                </button>
-                
-                {error && (
-                  <div className="bg-red-900/20 text-red-400 px-4 py-2 rounded-xl border border-red-500/30 text-xs">
-                    {error}
-                  </div>
-                )}
-              </div>
-            </section>
-
-            {/* Display & History Side-by-Side */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Display Section (Matches Reference Image width) */}
-              <div className="flex flex-col space-y-4">
-                <label className="text-banana-500 font-bold text-lg flex items-center gap-2">
-                  <span className="bg-banana-500 w-8 h-8 rounded-full flex items-center justify-center text-sm text-dark-900">3</span>
-                  Banana Output:
-                </label>
-                {currentImage ? (
-                  <section className="animate-in fade-in zoom-in duration-500">
-                    <div className="bg-dark-800 p-4 rounded-3xl shadow-2xl border-4 border-dark-800">
-                      <div className="aspect-square w-full rounded-2xl overflow-hidden bg-dark-900 relative">
-                        <img 
-                          src={currentImage.data} 
-                          alt={currentImage.prompt} 
-                          className="w-full h-full object-cover cursor-zoom-in"
-                          onClick={() => setZoomedImageUrl(currentImage.data)}
+                          hideHeader={true}
+                          customPrompt={specialViewPrompts[view.id] || "Tạo ra 5 góc chụp nghệ thuật với máy ảnh chuyên nghiệp, bao gồm: "}
+                          onCustomPromptChange={(val) => setSpecialViewPrompts(prev => ({ ...prev, [view.id]: val }))}
+                          hideResult={true}
+                          hideDownload={true}
+                          hideAddToSource={true}
+                          hideLoading={true}
+                          compact={true}
+                          theme={theme}
                         />
                       </div>
-                      <div className="mt-4">
-                        <button 
-                          onClick={() => handleDownload(currentImage.data, `banana-${currentImage.timestamp}.png`, currentImage.prompt)}
-                          className="bg-banana-500 text-dark-900 px-4 py-3 rounded-xl hover:bg-banana-400 transition-all flex items-center justify-center gap-2 font-black shadow-lg w-full text-sm"
-                        >
-                          <Download size={18} />
-                          DOWNLOAD IMAGE
-                        </button>
-                      </div>
-                    </div>
-                  </section>
-                ) : (
-                  <div className="bg-dark-800/50 border-2 border-dashed border-dark-800 rounded-3xl h-[300px] flex flex-col items-center justify-center text-banana-500/20 gap-2">
-                    <ImageIcon size={48} />
-                    <span className="font-bold">Waiting for magic...</span>
-                  </div>
-                )}
-              </div>
 
-              {/* History Gallery (Matches Vision width) */}
-              <div className="flex flex-col space-y-4">
-                <label className="text-banana-500 font-bold text-lg flex items-center gap-2">
-                  <span className="bg-banana-500 w-8 h-8 rounded-full flex items-center justify-center text-sm text-dark-900">4</span>
-                  The Bunch (History):
-                </label>
-                {history.length > 0 ? (
-                  <section className="bg-dark-800 p-6 rounded-3xl shadow-xl border-4 border-dark-800 flex-grow">
-                    <div className="flex justify-between items-center mb-4">
-                      <h2 className="text-sm font-black text-banana-500/60 uppercase tracking-widest">Recent Generations</h2>
-                      <button 
-                        onClick={handleClearHistory}
-                        className="text-red-500/60 hover:text-red-500 flex items-center gap-1 text-[10px] font-bold uppercase"
-                      >
-                        <Trash2 size={12} /> Clear All
-                      </button>
-                    </div>
-                    
-                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
-                      {history.map((img) => (
-                        <div 
-                          key={img.id} 
-                          onClick={() => {
-                            setCurrentImage(img);
-                            setZoomedImageUrl(null);
-                          }}
-                          className={`group relative cursor-pointer rounded-lg overflow-hidden border-2 transition-all hover:scale-105 active:scale-95 ${currentImage?.id === img.id ? 'border-banana-500 ring-2 ring-banana-500/20 shadow-lg' : 'border-dark-800 hover:border-banana-500/30'}`}
-                        >
-                          <img src={img.data} alt={img.prompt} className="w-full h-full object-cover aspect-square" />
-                          
-                          {/* Hover Actions */}
-                          <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1">
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); handleDownload(img.data, `banana-${img.timestamp}.png`, img.prompt); }}
-                              className="p-1.5 bg-banana-500 text-dark-900 rounded-md hover:bg-banana-400"
-                              title="Download"
-                            >
-                              <Download size={12} />
-                            </button>
-                            <button 
-                              onClick={(e) => handleDeleteImage(img.id, e)}
-                              className="p-1.5 bg-red-500 text-white rounded-md hover:bg-red-400"
-                              title="Delete"
-                            >
-                              <Trash2 size={12} />
-                            </button>
+                      <div className="flex-grow w-full">
+                        <div className="flex flex-col md:flex-row gap-6">
+                          {/* Column 2: Main Result */}
+                          <div className="w-full md:w-1/2 shrink-0 flex flex-col gap-6">
+                            <div className={`rounded-2xl border overflow-hidden aspect-square flex items-center justify-center relative group transition-colors ${theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
+                              {generations[view.id]?.status === 'success' && generations[view.id]?.imageUrl ? (
+                                <>
+                                  <img 
+                                    src={generations[view.id].imageUrl} 
+                                    alt="Collage Result" 
+                                    className="w-full h-full object-cover cursor-zoom-in"
+                                    onClick={() => setModalImage(generations[view.id].imageUrl!)}
+                                  />
+                                  <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest">
+                                    VIEW COLLAGE
+                                  </div>
+                                </>
+                              ) : generations[view.id]?.status === 'loading' ? (
+                                <div className="flex flex-col items-center gap-4 text-blue-600">
+                                  <Loader2 size={48} className="animate-spin" />
+                                  <p className="font-bold uppercase tracking-widest text-[10px]">Generating...</p>
+                                </div>
+                              ) : (
+                                <div className="text-center p-8 text-gray-300">
+                                   <LayoutGrid size={60} className="mx-auto mb-4 opacity-10" />
+                                   <p className="text-sm font-bold text-gray-400 uppercase tracking-wider">Collage Result</p>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Quick Select Angles Chips */}
+                            <div className={`p-4 rounded-xl border transition-colors ${theme === 'dark' ? 'bg-gray-800/50 border-gray-700' : 'bg-gray-50 border-gray-200'}`}>
+                              <div className="flex items-center gap-2 mb-3">
+                                <Camera size={14} className="text-blue-500" />
+                                <span className={`text-[10px] font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>Gợi ý góc chụp (Quick Select)</span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-1.5">
+                                {ARCHITECTURAL_ANGLES.map((angle) => {
+                                  const basePrompt = "Tạo ra 5 góc chụp nghệ thuật với máy ảnh chuyên nghiệp, bao gồm: ";
+                                  const currentPrompt = specialViewPrompts[view.id] || basePrompt;
+                                  
+                                  // Check if the angle is already in the prompt as a separate line/item
+                                  const isSelected = currentPrompt.split('\n').some(line => line.trim() === angle.value.trim());
+                                  
+                                  return (
+                                    <button
+                                      key={angle.label}
+                                      onClick={() => {
+                                        let newPrompt;
+                                        if (isSelected) {
+                                          // Remove the angle value precisely
+                                          newPrompt = currentPrompt
+                                            .split('\n')
+                                            .filter(line => line.trim() !== angle.value.trim())
+                                            .join('\n')
+                                            .trim();
+                                        } else {
+                                          // Add the angle value
+                                          newPrompt = currentPrompt ? `${currentPrompt}\n${angle.value}` : angle.value;
+                                        }
+                                        setSpecialViewPrompts(prev => ({ ...prev, [view.id]: newPrompt }));
+                                      }}
+                                      className={`w-full px-3 py-1 rounded-lg text-[9px] font-bold transition-all border text-left leading-tight h-8 flex items-center
+                                        ${isSelected 
+                                          ? 'bg-yellow-400 border-yellow-500 text-gray-900 shadow-sm scale-[1.02]' 
+                                          : (theme === 'dark' 
+                                            ? 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600 hover:border-blue-500 hover:text-blue-400' 
+                                            : 'bg-white border-gray-200 text-gray-600 hover:bg-blue-50 hover:border-blue-200 hover:text-blue-600')
+                                        }
+                                      `}
+                                    >
+                                      {angle.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Column 3: Extracted Views */}
+                          <div className="w-full md:w-1/2 shrink-0">
+                            <div className="grid grid-cols-2 gap-3">
+                              {[0, 1, 2, 3].map((i) => (
+                                <div key={i} className={`rounded-xl border overflow-hidden aspect-[3/4] flex items-center justify-center relative group transition-colors ${theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
+                                  {extractedViews[view.id]?.[i] ? (
+                                    <>
+                                      <img 
+                                        src={extractedViews[view.id][i]} 
+                                        alt={`View ${i + 1}`} 
+                                        className="w-full h-full object-cover cursor-zoom-in"
+                                        onClick={() => setModalImage(extractedViews[view.id][i])}
+                                      />
+                                      <div 
+                                        className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-end justify-end p-2 cursor-zoom-in"
+                                        onClick={() => setModalImage(extractedViews[view.id][i])}
+                                      >
+                                        <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            const link = document.createElement('a');
+                                            link.href = extractedViews[view.id][i];
+                                            link.download = `view-${i + 1}.png`;
+                                            link.click();
+                                          }}
+                                          className="p-2 bg-white/90 text-gray-900 rounded-full hover:bg-white shadow-lg transition-all transform translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100"
+                                          title="Download View"
+                                        >
+                                          <Download size={16} />
+                                        </button>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <div className="text-[10px] font-bold text-gray-300 uppercase tracking-widest">View {i + 1}</div>
+                                  )}
+                                </div>
+                              ))}
+                              {/* View 5 - Horizontal spanning 2 columns */}
+                              <div className={`col-span-2 rounded-xl border overflow-hidden aspect-[16/9] flex items-center justify-center relative group transition-colors ${theme === 'dark' ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200 shadow-sm'}`}>
+                                {extractedViews[view.id]?.[4] ? (
+                                  <>
+                                    <img 
+                                      src={extractedViews[view.id][4]} 
+                                      alt="View 5" 
+                                      className="w-full h-full object-cover cursor-zoom-in"
+                                      onClick={() => setModalImage(extractedViews[view.id][4])}
+                                    />
+                                    <div 
+                                      className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all flex items-end justify-end p-2 cursor-zoom-in"
+                                      onClick={() => setModalImage(extractedViews[view.id][4])}
+                                    >
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const link = document.createElement('a');
+                                          link.href = extractedViews[view.id][4];
+                                          link.download = `view-5.png`;
+                                          link.click();
+                                        }}
+                                        className="p-2 bg-white/90 text-gray-900 rounded-full hover:bg-white shadow-lg transition-all transform translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100"
+                                        title="Download View"
+                                      >
+                                        <Download size={16} />
+                                      </button>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <div className="text-[10px] font-bold text-gray-300 uppercase tracking-widest">View 5</div>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         </div>
-                      ))}
+                      </div>
                     </div>
-                  </section>
-                ) : (
-                  <div className="bg-dark-800/50 border-2 border-dashed border-dark-800 rounded-3xl flex-grow flex flex-col items-center justify-center text-banana-500/20 gap-2 min-h-[200px]">
-                    <Banana size={48} />
-                    <span className="font-bold">Your bunch is empty</span>
-                  </div>
-                )}
+                  ))}
+
+                  {/* Add New Row Button removed from here */}
+                </div>
               </div>
-            </div>
+            )}
+
+            {activeTab === 'standard' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                {VIEWS.map((view) => (
+                  <ViewCard
+                    key={view.id}
+                    view={view}
+                    data={generations[view.id]}
+                    onGenerate={handleGenerate}
+                    onAddToSource={handleAddGeneratedToSource}
+                    disabled={sourceImages.length === 0 || isAnalyzing}
+                    onMaximize={setModalImage}
+                    theme={theme}
+                  />
+                ))}
+                
+                {customViews.map((view) => (
+                  <ViewCard
+                    key={view.id}
+                    view={view}
+                    data={generations[view.id]}
+                    onGenerate={handleGenerate}
+                    onAddToSource={handleAddGeneratedToSource}
+                    disabled={sourceImages.length === 0 || isAnalyzing}
+                    onMaximize={setModalImage}
+                    onDelete={handleDeleteCustomView}
+                    onRename={handleRenameCustomView}
+                    initialCustomPrompt={view.prompt}
+                    theme={theme}
+                  />
+                ))}
+                
+                <button
+                  onClick={handleAddCustomView}
+                  className={`flex flex-col items-center justify-center h-full min-h-[400px] border-2 border-dashed rounded-xl transition-all group ${theme === 'dark' ? 'bg-gray-800 border-gray-700 hover:border-blue-500 hover:bg-gray-700/50' : 'bg-white border-gray-200 hover:border-blue-400 hover:bg-blue-50'}`}
+                >
+                  <div className={`p-4 rounded-full transition-colors mb-4 ${theme === 'dark' ? 'bg-gray-700 text-gray-500 group-hover:bg-gray-600 group-hover:text-blue-400' : 'bg-gray-50 text-gray-400 group-hover:bg-blue-100 group-hover:text-blue-600'}`}>
+                    <Plus size={32} />
+                  </div>
+                  <span className={`font-semibold ${theme === 'dark' ? 'text-gray-400 group-hover:text-blue-400' : 'text-gray-600 group-hover:text-blue-700'}`}>Add Custom View</span>
+                  <span className="text-xs text-gray-400 mt-1">Create your own angle</span>
+                </button>
+              </div>
+            )}
           </div>
         ) : (
-          <div className="flex flex-col lg:flex-row h-[800px] gap-4 animate-in slide-in-from-right duration-300">
-            {/* Main Chat Area */}
-            <div className="flex-grow flex flex-col bg-dark-800 rounded-3xl shadow-xl border-4 border-dark-800 overflow-hidden">
-              {/* Chat Messages */}
-              <div className="flex-grow overflow-y-auto p-6 space-y-6 bg-dark-900/50">
-                {chatMessages.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center space-y-4 opacity-40">
-                    <Sparkles size={64} className="text-banana-500" />
-                    <div>
-                      <h3 className="text-xl font-black text-banana-500">BANANA CHAT</h3>
-                      <p className="text-banana-100 font-medium max-w-xs">Ask me anything! I have search grounding and a very yellow personality.</p>
-                    </div>
-                  </div>
-                ) : (
-                  chatMessages.map((msg, idx) => (
-                    <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[85%] rounded-2xl p-4 shadow-sm ${
-                        msg.role === 'user' 
-                          ? 'bg-banana-500 text-dark-900 rounded-tr-none' 
-                          : 'bg-dark-900 border-2 border-dark-800 text-white rounded-tl-none'
-                      }`}>
-                        {msg.image && (
-                          <div className="mb-3 rounded-xl overflow-hidden border-2 border-dark-800/20">
-                            <img 
-                              src={msg.image} 
-                              alt="Chat attachment" 
-                              className="max-h-64 w-auto object-contain cursor-zoom-in"
-                              onClick={() => setZoomedImageUrl(msg.image!)}
-                            />
-                          </div>
-                        )}
-                        <div className="markdown-body prose prose-invert prose-sm max-w-none">
-                          <Markdown>{msg.text}</Markdown>
-                        </div>
-                        
-                        {msg.sources && msg.sources.length > 0 && (
-                          <div className="mt-3 pt-3 border-t border-dark-800 flex flex-wrap gap-2">
-                            {msg.sources.map((source: any, sIdx: number) => (
-                              <a 
-                                key={sIdx} 
-                                href={source.uri} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="text-[10px] font-bold bg-dark-800 hover:bg-dark-700 text-banana-500 px-2 py-1 rounded-full flex items-center gap-1 transition-colors"
-                              >
-                                <ExternalLink size={10} />
-                                {source.title || 'Source'}
-                              </a>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                )}
-                {chatLoading && (
-                  <div className="flex justify-start">
-                    <div className="bg-dark-900 border-2 border-dark-800 p-4 rounded-2xl rounded-tl-none shadow-sm flex items-center gap-2">
-                      <Loader2 size={20} className="animate-spin text-banana-500" />
-                      <span className="text-sm font-bold text-banana-500">Peeling back the answers...</span>
-                    </div>
-                  </div>
-                )}
-                <div ref={chatEndRef} />
-              </div>
-
-              {/* Chat Input */}
-              <div 
-                className={`p-4 bg-dark-800 border-t-2 border-dark-800 transition-colors ${isChatDragging ? 'bg-banana-500/10 border-banana-500' : ''}`}
-                onDragOver={handleChatDragOver}
-                onDragLeave={handleChatDragLeave}
-                onDrop={handleChatDrop}
-              >
-                {chatUploadedImage && (
-                  <div className="mb-4 relative inline-block">
-                    <img 
-                      src={chatUploadedImage.preview} 
-                      alt="Chat preview" 
-                      className="h-20 w-20 object-cover rounded-xl border-2 border-banana-500"
-                    />
-                    <button 
-                      onClick={() => setChatUploadedImage(null)}
-                      className="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full shadow-lg"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <button 
-                    onClick={() => chatFileInputRef.current?.click()}
-                    className="bg-dark-900 text-banana-500 p-4 rounded-xl border-2 border-dark-900 hover:border-banana-500 transition-all"
-                    title="Upload Image"
-                  >
-                    <Paperclip size={24} />
-                    <input 
-                      type="file" 
-                      ref={chatFileInputRef} 
-                      onChange={(e) => e.target.files?.[0] && handleChatImageUpload(e.target.files[0])} 
-                      accept="image/*" 
-                      className="hidden" 
-                    />
-                  </button>
-                  <input 
-                    type="text" 
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                    placeholder="Ask Banana Gemini anything..."
-                    className="flex-grow p-4 rounded-xl border-2 border-dark-900 bg-dark-900 focus:border-banana-500 focus:ring-4 focus:ring-banana-500/10 transition-all outline-none text-white"
-                  />
-                  <button 
-                    onClick={handleSendMessage}
-                    disabled={chatLoading || (!chatInput.trim() && !chatUploadedImage)}
-                    className="bg-banana-500 hover:bg-banana-400 disabled:opacity-50 text-dark-900 p-4 rounded-xl shadow-[0_4px_0_rgb(183,149,11)] active:shadow-none active:translate-y-[4px] transition-all"
-                  >
-                    <Send size={24} />
-                  </button>
-                </div>
-              </div>
+          <div className="text-center py-20 bg-white rounded-3xl border border-dashed border-gray-300 mx-auto max-w-4xl opacity-50 select-none grayscale">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 px-8 max-w-3xl mx-auto filter blur-[2px]">
+               {[1,2,3,4].map(i => (
+                 <div key={i} className="h-32 bg-gray-200 rounded-lg"></div>
+               ))}
             </div>
-
-            {/* Right Sidebar: Chat History */}
-            <div className="w-full lg:w-72 flex flex-col bg-dark-800 rounded-3xl shadow-xl border-4 border-dark-800 overflow-hidden">
-              <div className="p-4 border-b-2 border-dark-900 flex justify-between items-center">
-                <h3 className="text-banana-500 font-black text-sm uppercase tracking-wider">Chat History</h3>
-                <button 
-                  onClick={createNewSession}
-                  className="bg-banana-500 text-dark-900 p-2 rounded-lg hover:bg-banana-400 transition-colors"
-                  title="New Chat"
-                >
-                  <UserPlus size={16} />
-                </button>
-              </div>
-              <div className="flex-grow overflow-y-auto p-2 space-y-2">
-                {chatSessions.length === 0 ? (
-                  <div className="text-center py-10 opacity-20">
-                    <MessageSquare size={32} className="mx-auto mb-2" />
-                    <p className="text-xs font-bold">No chats yet</p>
-                  </div>
-                ) : (
-                  chatSessions.map(session => (
-                    <div 
-                      key={session.id}
-                      onClick={() => setCurrentSessionId(session.id)}
-                      className={`group p-3 rounded-xl cursor-pointer transition-all border-2 flex justify-between items-center ${currentSessionId === session.id ? 'bg-banana-500/10 border-banana-500 text-banana-500' : 'bg-dark-900 border-dark-900 text-banana-500/40 hover:border-banana-500/30'}`}
-                    >
-                      {editingSessionId === session.id ? (
-                        <div className="flex items-center gap-1 w-full" onClick={e => e.stopPropagation()}>
-                          <input 
-                            type="text"
-                            value={editingTitle}
-                            onChange={e => setEditingTitle(e.target.value)}
-                            onKeyDown={e => e.key === 'Enter' && handleRenameSession(session.id, editingTitle)}
-                            className="bg-dark-900 text-xs font-black p-1 rounded border border-banana-500 outline-none w-full text-white"
-                            autoFocus
-                          />
-                          <button onClick={() => handleRenameSession(session.id, editingTitle)} className="text-green-500 p-1 hover:bg-green-500/20 rounded">
-                            <Check size={14} />
-                          </button>
-                        </div>
-                      ) : (
-                        <>
-                          <div className="flex flex-col overflow-hidden">
-                            <span className="text-xs font-black truncate">{session.title}</span>
-                            <span className="text-[10px] opacity-50">
-                              {new Date(session.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
-                            <button 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setEditingSessionId(session.id);
-                                setEditingTitle(session.title);
-                              }}
-                              className="p-1 hover:bg-banana-500 hover:text-dark-900 rounded transition-colors"
-                              title="Rename"
-                            >
-                              <Pencil size={12} />
-                            </button>
-                            <button 
-                              onClick={(e) => deleteSession(session.id, e)}
-                              className="p-1 hover:bg-red-500 hover:text-white rounded transition-colors"
-                              title="Delete"
-                            >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-              <div className="p-3 bg-dark-900/50 text-[10px] text-banana-500/30 font-bold text-center italic">
-                Chats auto-delete after 24 hours
-              </div>
-            </div>
+            <p className="mt-8 text-xl font-medium text-gray-400">Upload images to unlock the view generator</p>
           </div>
         )}
       </main>
 
-      <footer className="mt-auto py-8 text-center text-banana-500/20 font-medium">
-        <p>Generated with Banana Gemini (2.5 Flash Image & 3 Flash Preview)</p>
-      </footer>
+      <ImageModal 
+        imageUrl={modalImage} 
+        onClose={() => setModalImage(null)} 
+      />
 
-      {/* Full-screen Zoom Modal */}
-      {zoomedImageUrl && (
-        <div 
-          className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4 cursor-zoom-out animate-in fade-in duration-300"
-          onClick={() => {
-            setZoomedImageUrl(null);
-            setZoomScale(1);
-          }}
-          onWheel={handleZoomScroll}
-        >
-          <button 
-            className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors z-[110]"
-            onClick={() => {
-              setZoomedImageUrl(null);
-              setZoomScale(1);
-            }}
-          >
-            <X size={40} />
-          </button>
-          <div 
-            className="transition-transform duration-200 ease-out"
-            style={{ transform: `scale(${zoomScale})` }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <img 
-              src={zoomedImageUrl} 
-              alt="Zoomed" 
-              className="max-w-full max-h-full object-contain shadow-2xl rounded-lg"
-            />
-          </div>
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-dark-800/80 text-banana-500 px-4 py-2 rounded-full text-xs font-bold backdrop-blur-md border border-dark-800">
-            Scroll to Zoom: {Math.round(zoomScale * 100)}%
-          </div>
-        </div>
-      )}
+      <ApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        onClose={() => setIsApiKeyModalOpen(false)}
+        onSave={handleSaveApiKey}
+        currentKey={userApiKey}
+        selectedModel={selectedModel}
+        onModelChange={setSelectedModel}
+      />
     </div>
   );
 };
 
-class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
-  constructor(props: any) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-
-  static getDerivedStateFromError(error: any) {
-    return { hasError: true, error };
-  }
-
-  render() {
-    if (this.state.hasError) {
-      let errorMessage = "Something went wrong.";
-      try {
-        const parsed = JSON.parse(this.state.error.message);
-        if (parsed.error) errorMessage = `Firestore Error: ${parsed.error}`;
-      } catch (e) {
-        errorMessage = this.state.error.message || errorMessage;
-      }
-
-      return (
-        <div className="min-h-screen bg-dark-900 flex items-center justify-center p-4">
-          <div className="bg-dark-800 border-2 border-red-500/50 p-8 rounded-3xl max-w-md w-full text-center space-y-4">
-            <div className="bg-red-500/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto text-red-500">
-              <X size={32} />
-            </div>
-            <h2 className="text-xl font-black text-white uppercase tracking-widest">Application Error</h2>
-            <p className="text-banana-500/60 text-sm font-medium">{errorMessage}</p>
-            <button 
-              onClick={() => window.location.reload()}
-              className="w-full bg-banana-500 text-dark-900 font-black py-3 rounded-xl hover:bg-banana-400 transition-all"
-            >
-              RELOAD APP
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-const AppWithBoundary: React.FC = () => (
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>
-);
-
-export default AppWithBoundary;
+export default App;
