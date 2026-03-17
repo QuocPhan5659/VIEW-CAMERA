@@ -17,11 +17,6 @@ export interface GeneratedImage {
 
 export type Resolution = '1K' | '2K' | '4K';
 
-export type ModelType = 
-  | 'gemini-3-pro'
-  | 'banana-free'
-  | 'fast';
-
-export type AspectRatio = '1:1' | '16:9' | '9:16' | '4:3' | '3:4' | '3:2' | '2:3' | 'random';
+export type AspectRatio = '1:1' | '16:9' | '9:16' | '4:3' | '3:4' | '3:2' | '2:3';
 
 export type GenerationState = Record<number, GeneratedImage>;

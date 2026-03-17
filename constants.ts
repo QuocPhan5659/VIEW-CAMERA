@@ -1,6 +1,6 @@
 import { ViewDefinition, AspectRatio } from './types';
 
-export const COMMON_CONSTRAINT = "STRICT ARCHITECTURAL CONSTRAINTS: KEEP THE GEOMETRY REALISTIC AND BELIEVABLE. DO NOT REDESIGN THE BUILDING. Maintain the exact structural proportions, materials, and architectural style of the provided reference image(s). Correct vertical perspective, no distortion. No structural modifications. No hallucinations of non-existent styles.";
+const COMMON_CONSTRAINT = "Ensure the result matches the architectural style, materials, and geometry of the provided reference image(s). Correct vertical perspective, no distortion. Same building, same materials, consistent architectural style.";
 
 export const ASPECT_RATIOS: { value: AspectRatio; label: string }[] = [
   { value: '1:1', label: '1:1 Square' },
@@ -10,7 +10,6 @@ export const ASPECT_RATIOS: { value: AspectRatio; label: string }[] = [
   { value: '3:4', label: '3:4 Vertical' },
   { value: '3:2', label: '3:2 Landscape' },
   { value: '2:3', label: '2:3 Portrait' },
-  { value: 'random', label: 'Random Output' },
 ];
 
 export const VIEWS: ViewDefinition[] = [
@@ -37,17 +36,10 @@ export const VIEWS: ViewDefinition[] = [
   },
   {
     id: 4,
-    titleVI: "Góc Mặt Đứng Chính",
+    titleVI: "Góc Chính Diện",
     titleEN: "Frontal View",
     description: "Trung tính, chuẩn hồ sơ (Neutral, professional profile).",
     prompt: `Simulate a frontal architectural photograph based on the reference image(s). Camera placed at human eye level, centered in front of the building, shot with a 35mm lens. Balanced composition, straight vertical lines, soft natural lighting. Realistic architectural photography, professional documentation style. ${COMMON_CONSTRAINT}`
-  },
-  {
-    id: 14,
-    titleVI: "Góc Mặt Đứng Bên",
-    titleEN: "Side Elevation",
-    description: "Chiều sâu, chi tiết mặt hông (Side details, depth).",
-    prompt: `Based on the reference image(s), create a Side Elevation view. Shoot straight into the side of the building, maintaining consistency in ground floor materials and window systems extending from the front to the side. Highly realistic architectural photography. ${COMMON_CONSTRAINT}`
   },
   {
     id: 5,
@@ -113,6 +105,13 @@ export const VIEWS: ViewDefinition[] = [
     prompt: `Based on the reference image(s), create a Front Elevation view (Orthographic/Flat View). Ensure architectural lines are absolutely vertical (Tilt-shift technique), clearly showing symmetry and the exact position of greenery as in the reference. Highly realistic architectural photography. ${COMMON_CONSTRAINT}`
   },
   {
+    id: 14,
+    titleVI: "Góc Mặt Đứng Bên",
+    titleEN: "Side Elevation",
+    description: "Chiều sâu, chi tiết mặt hông (Side details, depth).",
+    prompt: `Based on the reference image(s), create a Side Elevation view. Shoot straight into the side of the building, maintaining consistency in ground floor materials and window systems extending from the front to the side. Highly realistic architectural photography. ${COMMON_CONSTRAINT}`
+  },
+  {
     id: 15,
     titleVI: "Góc Chính Diện Từ Dưới",
     titleEN: "Worm’s-eye Front View",
@@ -162,11 +161,74 @@ export const VIEWS: ViewDefinition[] = [
     prompt: `Create an Architectural Junction Shot. Close-up on the intersection between geometric volumes or between two different materials to demonstrate the structural sophistication of the building. Photorealistic architectural detail. ${COMMON_CONSTRAINT}`
   },
   {
+    id: 22,
+    titleVI: "Chi Tiết Bóng Đổ",
+    titleEN: "Shadow & Pattern Detail",
+    description: "Hiệu ứng ánh sáng qua lam/cây (Light & shadow patterns).",
+    prompt: `Create a Shadow & Pattern Detail view. Focus on how light penetrates through louvers, railings, or tree canopies to form shadow patterns on the building's wall surfaces. High contrast, artistic lighting. ${COMMON_CONSTRAINT}`
+  },
+  {
+    id: 23,
+    titleVI: "Góc Nhìn Từ Ban Công",
+    titleEN: "POV from Balcony",
+    description: "Từ trong nhìn ra (View from inside out).",
+    prompt: `Create a POV from Balcony view. Position the camera from inside a balcony looking out, seeing part of the building's railing and greenery in the foreground, with the street context in the distance. Immersive perspective. ${COMMON_CONSTRAINT}`
+  },
+  {
+    id: 24,
+    titleVI: "Chi Tiết Ánh Sáng & Bóng Đổ Động",
+    titleEN: "Dynamic Light & Shadow",
+    description: "Mảng sáng tối ấn tượng qua lam/cửa (Dramatic interplay of light and shadow).",
+    prompt: `Create a Dynamic Light & Shadow Detail view. Focus on how afternoon sun (or early morning light) slants through louvers or window frames, creating impressive and dynamic patterns of light and dark on the architectural surface. High contrast, artistic composition. ${COMMON_CONSTRAINT}`
+  },
+  {
     id: 25,
     titleVI: "Chi Tiết Phản Chiếu Nước",
     titleEN: "Water Reflection Detail",
     description: "Phản chiếu kiến trúc lên mặt nước/kính (Reflection on water/glass).",
     prompt: `Create a Water Reflection Detail view. If there is a water feature or large reflective surface (glass) near the building, capture a close-up of the architecture reflecting onto that surface, creating a unique visual effect. If no water exists in reference, simulate a puddle or glass reflection. ${COMMON_CONSTRAINT}`
+  },
+  {
+    id: 26,
+    titleVI: "Chi Tiết Đường Nét & Kết Cấu",
+    titleEN: "Line & Texture Focus",
+    description: "Giao nhau đường nét và vật liệu (Intersection of lines & textures).",
+    prompt: `Create an Architectural Line & Texture Focus view. Close-up on the intersection of vertical and horizontal lines on the facade, along with the surface texture of main materials. Minimize distractions. Minimalist architectural photography. ${COMMON_CONSTRAINT}`
+  },
+  {
+    id: 27,
+    titleVI: "Chi Tiết Thang Bộ/Thang Máy",
+    titleEN: "Staircase/Elevator Detail",
+    description: "Cận cảnh thang ngoài trời (Outdoor staircase/elevator close-up).",
+    prompt: `Create a Staircase/Elevator Detail view. If the building has an outdoor staircase or elevator visible in the reference, capture a close-up highlighting its materials and structure. If not present, focus on the vertical circulation element or main structural column. ${COMMON_CONSTRAINT}`
+  },
+  {
+    id: 28,
+    titleVI: "Từ Trong Nhìn Ra Ban Công",
+    titleEN: "Interior-to-Balcony POV",
+    description: "Khung cảnh qua cửa lớn (View through large door).",
+    prompt: `Create an Interior-to-Balcony Perspective view. Shoot from an interior position, through a large door frame, looking out at the balcony. Include a small part of the interior as foreground, with the balcony and outside scenery as background, maintaining correct balcony structure. ${COMMON_CONSTRAINT}`
+  },
+  {
+    id: 29,
+    titleVI: "Từ Ban Công Nhìn Xuống",
+    titleEN: "Balcony Downward View",
+    description: "Khoe sân vườn/sân trước (Showcasing front yard/garden).",
+    prompt: `Create a Balcony Downward View. Shoot from the top floor balcony, pointing the lens down towards the front yard or garden below. Clarify how the building integrates with the green space and entrance. ${COMMON_CONSTRAINT}`
+  },
+  {
+    id: 30,
+    titleVI: "Từ Mái Nhìn Xuống Cổng",
+    titleEN: "Rooftop Gate View",
+    description: "Bố cục lối vào từ trên cao (Entrance layout from above).",
+    prompt: `Create a Rooftop Gate View. Place the camera high (from the roof or highest floor) looking straight down at the main gate and entrance area. Show the overall layout of the entry zone, including the fence and pathway. ${COMMON_CONSTRAINT}`
+  },
+  {
+    id: 31,
+    titleVI: "Cửa Sổ Khung Tranh",
+    titleEN: "Framed Window View",
+    description: "Khung cửa sổ như tranh (Window as a picture frame).",
+    prompt: `Create a Framed Window View. Shoot from inside a room, through a window frame. The window acts as a 'picture frame' surrounding the outside scene (e.g., street, opposite trees). Include a small part of the window frame as foreground to create depth. ${COMMON_CONSTRAINT}`
   },
   {
     id: 32,
@@ -182,69 +244,4 @@ export const VIEWS: ViewDefinition[] = [
     description: "Chi tiết giàn lam, cây xanh mái (Pergola & rooftop plants).",
     prompt: `Create a Rooftop Terrace Detail view. Focus closely on the highest terrace or balcony area. Clearly show the pergola structure, rooftop greenery system, and railing details, ensuring complete synchronization with the design style of the original image. ${COMMON_CONSTRAINT}`
   }
-];
-
-export const SPECIAL_VIEWS: ViewDefinition[] = [
-  {
-    id: 34,
-    titleVI: "VIEW COLLAGE 1",
-    titleEN: "Artistic 5-Angle Collage 1",
-    description: "Bố cục 5 ảnh trên nền đen xám (5-View Grid layout, dark background).",
-    prompt: `Dựa vào ảnh tải lên làm tham chiếu, Tạo ra 5 góc chụp nghệ thuật với máy ảnh chuyên nghiệp, bao gồm:
-    MANDATORY COMPOSITION: You MUST arrange the 5 views in a specific grid layout on a solid DARK background (#121212).
-    - Top Row: 2 equal-sized square/rectangular views (View 1, View 2).
-    - Middle Row: 2 equal-sized square/rectangular views (View 3, View 4).
-    - Bottom Row: 1 large horizontal panoramic view spanning the full width of the two columns above (View 5).
-    The 5 views must be perfectly synchronized in style, materials, and lighting.
-    Style: Professional architectural photography, consistent lighting and materials across all views. High detailed, photorealistic. ${COMMON_CONSTRAINT}`
-  },
-  {
-    id: 35,
-    titleVI: "VIEW COLLAGE 2",
-    titleEN: "Artistic 5-Angle Collage 2",
-    description: "Bố cục 5 ảnh trên nền đen xám (5-View Grid layout, dark background).",
-    prompt: `Dựa vào ảnh tải lên làm tham chiếu, Tạo ra 5 góc chụp nghệ thuật với máy ảnh chuyên nghiệp, bao gồm:
-    MANDATORY COMPOSITION: You MUST arrange the 5 views in a specific grid layout on a solid DARK background (#121212).
-    - Top Row: 2 equal-sized square/rectangular views (View 1, View 2).
-    - Middle Row: 2 equal-sized square/rectangular views (View 3, View 4).
-    - Bottom Row: 1 large horizontal panoramic view spanning the full width of the two columns above (View 5).
-    The 5 views must be perfectly synchronized in style, materials, and lighting.
-    Style: Professional architectural photography, consistent lighting and materials across all views. High detailed, photorealistic. ${COMMON_CONSTRAINT}`
-  },
-  {
-    id: 36,
-    titleVI: "VIEW COLLAGE 3",
-    titleEN: "Artistic 5-Angle Collage 3",
-    description: "Bố cục 5 ảnh trên nền đen xám (5-View Grid layout, dark background).",
-    prompt: `Dựa vào ảnh tải lên làm tham chiếu, Tạo ra 5 góc chụp nghệ thuật với máy ảnh chuyên nghiệp, bao gồm:
-    MANDATORY COMPOSITION: You MUST arrange the 5 views in a specific grid layout on a solid DARK background (#121212).
-    - Top Row: 2 equal-sized square/rectangular views (View 1, View 2).
-    - Middle Row: 2 equal-sized square/rectangular views (View 3, View 4).
-    - Bottom Row: 1 large horizontal panoramic view spanning the full width of the two columns above (View 5).
-    The 5 views must be perfectly synchronized in style, materials, and lighting.
-    Style: Professional architectural photography, consistent lighting and materials across all views. High detailed, photorealistic. ${COMMON_CONSTRAINT}`
-  }
-];
-
-export const MULTI_ANGLE_SUB_PROMPTS = [
-  "View 1: Toàn Cảnh (Wide Shot). Chụp toàn bộ không gian và bối cảnh trong ảnh tham chiếu, thể hiện trọn vẹn bố cục kiến trúc. Giữ nguyên độ phân giải gốc, duy trì độ sắc nét nguyên bản, không làm mờ, không nén, không thay đổi chi tiết.",
-  "View 2: Trung Cảnh (Medium Shot). Chụp tập trung vào khu vực chính của ảnh tham chiếu, thể hiện rõ sự kết nối giữa các thành phần kiến trúc. Giữ nguyên độ phân giải gốc, duy trì độ sắc nét nguyên bản, không làm mờ, không nén, không thay đổi chi tiết.",
-  "View 3: Cận Cảnh (Close-up Shot). Chụp cận cảnh vào một mảng không gian hoặc vật liệu cụ thể từ ảnh tham chiếu. Giữ nguyên độ phân giải gốc, duy trì độ sắc nét nguyên bản, không làm mờ, không nén, không thay đổi chi tiết.",
-  "View 4: Đặc Tả (Macro/Detail Shot). Chụp đặc tả nghệ thuật vào một chi tiết kiến trúc hoặc vật liệu tinh xảo duy nhất từ ảnh tham chiếu. Giữ nguyên độ phân giải gốc, duy trì độ sắc nét nguyên bản, không làm mờ, không nén, không thay đổi chi tiết.",
-  "View 5: Góc Ngang Toàn Cảnh (Horizontal Wide View). Chụp góc ngang rộng bao quát, thể hiện chiều sâu và sự sang trọng của toàn bộ không gian. Giữ nguyên độ phân giải gốc, duy trì độ sắc nét nguyên bản, không làm mờ, không nén, không thay đổi chi tiết."
-];
-
-export const ARCHITECTURAL_ANGLES = [
-  { label: "Cận cảnh (Close-up)", value: "Close-up:" },
-  { label: "Đặc tả (Extreme Close-up)", value: "Extreme Close-up:" },
-  { label: "Góc cao / Góc chúc xuống (High Angle)", value: "High Angle:" },
-  { label: "Góc thấp / Góc hất lên (Low Angle)", value: "Low Angle:" },
-  { label: "Góc ngang tầm mắt (Eye-level Angle)", value: "Eye-level Angle:" },
-  { label: "Góc nghiêng (Dutch Angle)", value: "Dutch Angle / Canted Angle:" },
-  { label: "Góc nhìn của kiến (Worm's-eye view)", value: "Worm's-eye view:" },
-  { label: "Góc nhìn từ trên không (Bird's-eye view)", value: "Bird's-eye view / Top-down:" },
-  { label: "Góc Trực Diện (Frontal Angle)", value: "Frontal Angle:" },
-  { label: "Toàn cảnh (Wide shot)", value: "Wide shot:" },
-  { label: "Trung cảnh (Medium shot)", value: "Medium shot:" },
-  { label: "Viễn cảnh (Extreme Long Shot)", value: "Extreme Long Shot:" }
 ];

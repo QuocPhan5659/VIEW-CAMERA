@@ -1,15 +1,13 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { Resolution, AspectRatio, ModelType } from "../types";
+import { Resolution, AspectRatio } from "../types";
 
-const getAiClient = (providedApiKey?: string) => {
-  // Priority: 1. User-provided key, 2. Platform-selected key (API_KEY), 3. Platform default key (GEMINI_API_KEY)
-  const apiKey = providedApiKey || 
-                 (typeof process !== 'undefined' ? (process.env.API_KEY || process.env.GEMINI_API_KEY) : undefined) ||
-                 (typeof window !== 'undefined' && ((window as any).process?.env?.API_KEY || (window as any).process?.env?.GEMINI_API_KEY));
-  
+const getAiClient = () => {
+  const apiKey = (window as any).process?.env?.API_KEY || 
+                 (window as any).API_KEY || 
+                 (process.env as any).GEMINI_API_KEY;
+                 
   if (!apiKey) {
-    console.error("API Key not found");
-    throw new Error("API Key is missing. Please click the API Key button to configure it.");
+    throw new Error("API Key is missing. Please check your environment variables.");
   }
   return new GoogleGenAI({ apiKey });
 };
@@ -25,8 +23,8 @@ export interface ArchitecturalAnalysis {
  * Analyzes the provided architectural images to create a detailed description
  * of style, materials, and greenery to ensure consistency.
  */
-export const analyzeArchitecturalStyle = async (base64Images: string[], apiKey?: string): Promise<ArchitecturalAnalysis> => {
-  const ai = getAiClient(apiKey);
+export const analyzeArchitecturalStyle = async (base64Images: string[]): Promise<ArchitecturalAnalysis> => {
+  const ai = getAiClient();
   
   const imageParts = base64Images.map(img => {
     // Handle both raw base64 and data URL formats
@@ -37,32 +35,24 @@ export const analyzeArchitecturalStyle = async (base64Images: string[], apiKey?:
   });
 
   const prompt = `
-    Role: You are a Lead Architectural AI Specialist.
-    
-    CRITICAL RULE: MULTI-IMAGE SYNTHESIS & OBJECT UNITY
-    1. Treat ALL uploaded images as DIFFERENT ANGLES of the SAME SINGLE ARCHITECTURAL OBJECT.
-    2. Do NOT treat them as separate buildings. They are puzzle pieces of ONE house/building.
-    3. SYNTHESIS TASK: Combine data from all images to create a comprehensive "Material & Structural Map".
-       - Example: If Image 1 shows a stone facade and Image 2 shows a wooden side window, the final mental model MUST have BOTH a stone facade and wooden side windows.
-    4. You must infer the spatial relationship between the images (e.g., "This is the front," "This is the left side").
-    
-    Task: Analyze the synthesized building to generate a Unified Architectural DNA:
-    1. Structure & Geometry (Massing, roof shape, floor heights - consistent across all views).
-    2. Unified Material Palette (Specific stone types, wood colors, glass transparency - merged from all angles).
-    3. Greenery System (Location of planters, vines, specific plant types observed in ANY image).
-    4. Architectural Style (The single defining style of this building).
-    5. Context & Lighting (The surrounding atmosphere).
-    6. Output Format: JSON object with 2 fields:
-    - 'english': Detailed technical description for image generation prompts. Explicitly state: "This building features [Details from Img 1] on the front and [Details from Img 2] on the side..."
-    - 'vietnamese': Detailed analysis for the user (Tiếng Việt).
+    Role: Bạn là một chuyên gia AI về hình ảnh kiến trúc và nhiếp ảnh chuyên nghiệp.
+    Task: Phân tích chi tiết các hình ảnh được cung cấp để hiểu sâu về: 
+    1. Cấu trúc nhà (Structure & Geometry)
+    2. Vật liệu chi tiết (Materials - màu sơn, loại đá, gỗ, kính)
+    3. Hệ thống cây xanh (Greenery - loại cây cụ thể như hoa giấy, trúc, cỏ)
+    4. Phong cách thiết kế (Architectural Style)
+    5. Ánh sáng và Bối cảnh (Lighting & Context - ví dụ: đường phố Việt Nam)
 
-    Constraint: Absolutely DO NOT omit specific distinct details found in any reference image. If a detail exists in one photo, it belongs to the building.
+    Output Format: Trả về kết quả dưới dạng JSON object với 2 trường:
+    - 'english': Phân tích chi tiết bằng tiếng Anh (dùng để làm prompt sinh ảnh).
+    - 'vietnamese': Phân tích chi tiết bằng tiếng Việt (dùng để hiển thị cho người dùng đọc).
+    
+    Nội dung phân tích cần tập trung vào các chi tiết vật lý có thể nhìn thấy được để đảm bảo sự đồng bộ nhất quán (Consistency).
   `;
 
   try {
-    // Using gemini-3.1-pro-preview for analysis
     const response = await ai.models.generateContent({
-      model: 'gemini-3.1-pro-preview',
+      model: 'gemini-2.5-flash',
       contents: {
         parts: [
           { text: prompt },
@@ -99,12 +89,9 @@ export const generateArchitecturalView = async (
   resolution: Resolution = '1K',
   aspectRatio: AspectRatio = '1:1',
   analysisContext?: string,
-  customPrompt?: string,
-  useMasterLighting: boolean = false,
-  apiKey?: string,
-  selectedModel?: ModelType
+  customPrompt?: string
 ): Promise<string> => {
-  const ai = getAiClient(apiKey);
+  const ai = getAiClient();
   
   // Construct image parts for the API
   const imageParts = base64Images.map(img => {
@@ -120,38 +107,16 @@ export const generateArchitecturalView = async (
     };
   });
 
-  // Handle Random Aspect Ratio
-  let finalAspectRatio = aspectRatio;
-  let randomAngleInstruction = "";
-  if (aspectRatio === 'random') {
-    const ratios: AspectRatio[] = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'];
-    finalAspectRatio = ratios[Math.floor(Math.random() * ratios.length)];
-    randomAngleInstruction = "\n\nRANDOM OUTPUT MODE: Choose a random, unique, and artistic architectural camera angle (e.g., extreme low angle, high oblique, or unique perspective) that differs from the standard reference view. IMPORTANT: You must strictly maintain all structural details, geometry, and materials without any distortion or redesign.";
-  }
-
-  // Determine model and config based on resolution or user selection
+  // Determine model and config based on resolution
   const isHighRes = resolution === '2K' || resolution === '4K';
-  let model = selectedModel || 'pro';
+  const model = isHighRes ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
   
-  // Map aliases to actual model names
-  let actualModel = 'gemini-3.1-pro-preview';
-  if (model === 'gemini-3-pro') actualModel = 'gemini-3.1-pro-preview';
-
-  // Configuration for the model
-  const config: any = {
+  const config = {
     imageConfig: {
-      aspectRatio: finalAspectRatio
+      ...(isHighRes ? { imageSize: resolution } : {}),
+      aspectRatio: aspectRatio
     }
   };
-
-  // Only certain models support imageSize
-  if (actualModel === 'gemini-3.2-flash-image-preview' || actualModel === 'gemini-3.1-flash-image-preview' || actualModel === 'gemini-3-pro-image-preview') {
-    if (isHighRes) {
-      config.imageConfig.imageSize = resolution;
-    }
-  }
-
-  // ... (rest of the code should use actualModel instead of model for the API call)
 
   // Enhance the prompt with the analysis context if available
   let finalPrompt = prompt;
@@ -161,48 +126,26 @@ export const generateArchitecturalView = async (
     finalPrompt += `\n\nADDITIONAL INSTRUCTIONS: ${customPrompt}`;
   }
 
-  // Master Lighting Logic
-  if (useMasterLighting) {
-    finalPrompt += `\n\nLIGHTING CONSTRAINT: STRICTLY MATCH the lighting, time of day, and atmospheric conditions of the reference image(s). Do not change the mood (e.g. if reference is night, output must be night).`;
+  if (analysisContext) {
+    finalPrompt = `
+      ARCHITECTURAL DNA ANALYSIS:
+      ${analysisContext}
+      
+      BASED ON THE ARCHITECTURAL ANALYSIS ABOVE AND THE REFERENCE IMAGES:
+      ${finalPrompt}
+      
+      CRITICAL INSTRUCTION: Ensure the generated image is perfectly consistent with the analyzed materials, plants, and architectural style described above.
+    `;
   }
 
-  // Inject Synthesis Logic into Generation
-  finalPrompt = `
-    SYSTEM INSTRUCTION: MULTI-IMAGE CONSISTENCY MODE
-    - You are viewing the SAME building from different angles (the attached reference images).
-    - You must reconstruct the 3D logic of this single building in your mind.
-    - If generating a side view, include details seen in the side-angle references.
-    - If generating a front view, include details seen in the front-angle references.
-    - Ensure material continuity: The wood/stone/paint colors must be identical to the references.
-    
-    STRICT ARCHITECTURAL CONSTRAINTS:
-    - KEEP THE GEOMETRY REALISTIC AND BELIEVABLE.
-    - DO NOT REDESIGN THE BUILDING. Maintain the exact structural proportions, materials, and architectural style of the provided reference image(s).
-    - NO DISTORTION: Details must not be warped, skewed, or altered from the original upload.
-    - AVOID EXAGGERATED PERSPECTIVES unless specifically requested. Use professional, realistic architectural photography principles.
-    - Ensure material continuity: The wood/stone/paint colors must be identical to the references.
-    ${randomAngleInstruction}
-    
-    ${analysisContext ? `
-    UNIFIED ARCHITECTURAL DNA (SYNTHESIZED FROM ALL ANGLES):
-    ${analysisContext}
-    ` : ''}
-    
-    TASK PROMPT:
-    ${finalPrompt}
-    
-    STRICT CONSTRAINT: The result must look like it belongs to the exact same project as the reference images. Correct vertical perspective. No hallucinations of non-existent styles. No structural modifications.
-    UNIQUE_ID: ${Math.random().toString(36).substring(7)}
-  `;
-
   let attempt = 0;
-  const maxRetries = 8; // Increased retries further
+  const maxRetries = 3;
   let lastError: any;
 
   while (attempt <= maxRetries) {
     try {
       const response = await ai.models.generateContent({
-        model: actualModel,
+        model: model,
         contents: {
           parts: [
             { text: finalPrompt },
@@ -225,6 +168,8 @@ export const generateArchitecturalView = async (
       const textOutput = response.text;
       if (textOutput) {
          console.warn("Model returned text instead of image:", textOutput);
+         // If it's a safety refusal, retrying might not help, but we follow the loop logic.
+         // Usually we break here if it's a refusal, but for simplicity we treat it as no-image error.
       }
 
       throw new Error("No image data received from Gemini API.");
@@ -235,22 +180,10 @@ export const generateArchitecturalView = async (
       const errorMessage = error.message || JSON.stringify(error);
       const isRateLimit = errorCode === 429 || errorMessage.includes('429') || errorMessage.includes('quota') || errorMessage.includes('RESOURCE_EXHAUSTED');
       const isServerOverload = errorCode === 503 || errorMessage.includes('503');
-      const isPermissionDenied = errorCode === 403 || errorMessage.includes('403') || errorMessage.includes('PERMISSION_DENIED');
-
-      if (isPermissionDenied) {
-        throw new Error(`Permission Denied (403): The selected model "${model}" likely requires a Paid API Key or specific permissions. Please check your API key tier in Google AI Studio or switch to a free model.`);
-      }
-
-      if (isRateLimit && errorMessage.includes('quota')) {
-        console.error("Quota Exceeded (429):", errorMessage);
-        throw new Error("Quota Exceeded (429): You have exceeded your Gemini API quota. If you are on the Free Tier, you may have reached the daily or per-minute limit. Please wait a few minutes or switch to a different model/API key.");
-      }
 
       if ((isRateLimit || isServerOverload) && attempt < maxRetries) {
         attempt++;
-        // For rate limits, use a much more aggressive backoff
-        const baseDelay = isRateLimit ? 10000 : 3000;
-        const delay = baseDelay * Math.pow(2, attempt - 1); 
+        const delay = 2000 * Math.pow(2, attempt - 1); // Exponential backoff
         console.warn(`Gemini API Error (${errorCode}). Retrying in ${delay}ms... (Attempt ${attempt}/${maxRetries})`);
         await wait(delay);
         continue;

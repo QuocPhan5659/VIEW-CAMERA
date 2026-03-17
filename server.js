@@ -64,7 +64,7 @@ app.post('/api/analyze', async (req, res) => {
     `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.1-pro-preview',
+      model: 'gemini-2.5-flash',
       contents: {
         parts: [
           { text: prompt },
@@ -119,7 +119,7 @@ app.post('/api/generate', async (req, res) => {
 
     // Model selection
     const isHighRes = resolution === '2K' || resolution === '4K';
-    const model = 'gemini-3.1-pro-preview';
+    const model = isHighRes ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
 
     const config = {
       imageConfig: {
